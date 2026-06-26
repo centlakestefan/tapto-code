@@ -97,6 +97,46 @@ bool is_noise_dir(const std::string& name) {
            name == ".minicode" || name == ".vs" || name == ".vscode";
 }
 
+// --- path sandbox ---------------------------------------------------------
+
+// The directory mini-code was started in (canonicalized). All model-driven file
+// access is confined to this subtree. Computed once on first use; the process
+// never changes its working directory.
+const fs::path& sandbox_root() {
+    static const fs::path root = []() {
+        std::error_code ec;
+        fs::path cwd = fs::current_path(ec);
+        if (ec) return fs::path(".");
+        fs::path canon = fs::weakly_canonical(cwd, ec);
+        return ec ? cwd : canon;
+    }();
+    return root;
+}
+
+// Resolve `input` (absolute, or relative to the sandbox root) and confirm it
+// stays within the root subtree. weakly_canonical normalizes ".."/"." and
+// resolves symlinks in the existing prefix, so attempts to escape via those are
+// caught. On success fills `out` with the resolved absolute path and returns
+// true; otherwise sets `error` and returns false.
+bool resolve_in_sandbox(const std::string& input, fs::path& out, std::string& error) {
+    const fs::path& root = sandbox_root();
+    std::error_code ec;
+    fs::path in_path(input);
+    fs::path abs = in_path.is_absolute() ? in_path : (root / in_path);
+    fs::path resolved = fs::weakly_canonical(abs, ec);
+    if (ec) resolved = abs.lexically_normal();
+
+    fs::path rel = resolved.lexically_relative(root);
+    if (rel.empty() || *rel.begin() == fs::path("..")) {
+        error = "ERROR: '" + input + "' is outside the working directory. "
+                "mini-code can only access the folder it was started in and its "
+                "subdirectories.";
+        return false;
+    }
+    out = resolved;
+    return true;
+}
+
 // --- text editor tool -----------------------------------------------------
 
 std::string execute_text_editor(Context& /*context*/, const json& in) {
@@ -106,7 +146,13 @@ std::string execute_text_editor(Context& /*context*/, const json& in) {
 
         if (command == "view") {
             if (!in.contains("path")) return "ERROR: 'path' not present.";
-            fs::path path = in["path"].get<std::string>();
+            fs::path path;
+            {
+                std::string sandbox_err;
+                if (!resolve_in_sandbox(in["path"].get<std::string>(), path, sandbox_err)) {
+                    return sandbox_err;
+                }
+            }
             std::error_code ec;
             if (!fs::exists(path, ec)) return "ERROR: File not found: " + path.string();
 
@@ -158,7 +204,13 @@ std::string execute_text_editor(Context& /*context*/, const json& in) {
         if (command == "create") {
             if (!in.contains("path")) return "ERROR: 'path' not present.";
             if (!in.contains("file_text")) return "ERROR: 'file_text' required for create command.";
-            fs::path path = in["path"].get<std::string>();
+            fs::path path;
+            {
+                std::string sandbox_err;
+                if (!resolve_in_sandbox(in["path"].get<std::string>(), path, sandbox_err)) {
+                    return sandbox_err;
+                }
+            }
             std::error_code ec;
             if (fs::exists(path, ec)) {
                 return "ERROR: File already exists: " + path.string() +
@@ -175,7 +227,13 @@ std::string execute_text_editor(Context& /*context*/, const json& in) {
             if (!in.contains("old_str")) {
                 return "ERROR: str_replace requires 'old_str'. To delete the matched text, pass new_str=\"\".";
             }
-            fs::path path = in["path"].get<std::string>();
+            fs::path path;
+            {
+                std::string sandbox_err;
+                if (!resolve_in_sandbox(in["path"].get<std::string>(), path, sandbox_err)) {
+                    return sandbox_err;
+                }
+            }
             std::string content;
             if (!read_file(path, content)) {
                 return "ERROR: File not found: " + path.string() + ". Use the create command to create it.";
@@ -209,7 +267,13 @@ std::string execute_text_editor(Context& /*context*/, const json& in) {
             if (!in.contains("insert_line") || !in.contains("new_str")) {
                 return "ERROR: insert_line and new_str required.";
             }
-            fs::path path = in["path"].get<std::string>();
+            fs::path path;
+            {
+                std::string sandbox_err;
+                if (!resolve_in_sandbox(in["path"].get<std::string>(), path, sandbox_err)) {
+                    return sandbox_err;
+                }
+            }
             std::string content;
             if (!read_file(path, content)) return "ERROR: Failed to read " + path.string();
 
@@ -244,9 +308,13 @@ std::string execute_find_files(Context& /*context*/, const json& in) {
                          !in["search_string"].get<std::string>().empty();
         if (has_query) query = in["search_string"].get<std::string>();
 
-        fs::path root = start;
+        fs::path base;
+        {
+            std::string sandbox_err;
+            if (!resolve_in_sandbox(start, base, sandbox_err)) return sandbox_err;
+        }
         std::error_code ec;
-        if (!fs::exists(root, ec)) return "ERROR: Path not found: " + start;
+        if (!fs::exists(base, ec)) return "ERROR: Path not found: " + start;
 
         constexpr size_t kMaxFiles = 100;
         constexpr size_t kMaxFileBytes = 5 * 1024 * 1024;
@@ -258,10 +326,14 @@ std::string execute_find_files(Context& /*context*/, const json& in) {
         };
         std::vector<Match> results;
 
-        fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, ec), end;
+        fs::recursive_directory_iterator it(base, fs::directory_options::skip_permission_denied, ec), end;
         for (; it != end && results.size() < kMaxFiles; it.increment(ec)) {
             if (ec) break;
             const fs::path& p = it->path();
+            // Never follow symlinks — they could point outside the sandbox.
+            // (Recursive iteration does not descend into directory symlinks by
+            // default; this also skips symlinked files for content grep.)
+            if (it->is_symlink(ec)) continue;
             if (it->is_directory(ec)) {
                 if (is_noise_dir(p.filename().string())) it.disable_recursion_pending();
                 continue;

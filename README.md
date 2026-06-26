@@ -101,6 +101,12 @@ directory mini-code is launched from):
 These edit real files on disk. `create` refuses to overwrite an existing file;
 `str_replace` requires the target string to be unique.
 
+**Sandbox:** the file tools (`str_replace_based_edit_tool`, `find_files`) are
+confined to the directory mini-code was started in and its subdirectories. Paths
+that resolve outside that subtree — via `..`, an absolute path, or a symlink —
+are rejected. (`run_command` is governed separately: it can only run the
+commands you explicitly allow-list, so its reach is whatever you configure.)
+
 ## Commands (allow-list)
 
 `run_command` is **not** a general shell — the agent can only run commands you
