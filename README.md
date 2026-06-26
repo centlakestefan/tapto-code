@@ -1,7 +1,24 @@
 # mini-code
 
-A small cross-platform (Windows + Linux) CLI. The first component is a
-git-inspired configuration system with three scopes.
+A small, dependency-light command-line AI coding assistant for Windows and
+Linux. Chat with an AI model in your terminal and let it work in the current
+folder — read and edit files, search the tree, and run commands you've
+approved — all from a single self-contained C++17 binary.
+
+**Highlights**
+
+- **Multiple providers** — Claude, OpenAI, or Gemini, chosen via config; the API
+  key is read from an environment variable or config.
+- **File tools** — the model can view, create, and edit files and search the
+  tree, confined to the directory you launch it in (sandboxed: no escaping via
+  `..`, absolute paths, or symlinks).
+- **Allow-listed commands** — `run_command` only runs commands you've explicitly
+  added (with optional `%1` / `%p1` placeholders); it is never a general shell.
+- **Three-scope config** — system / global / project, with git-style precedence.
+- **Self-contained** — one binary; dependencies (nlohmann/json, cpp-httplib,
+  OpenSSL) are fetched at build time.
+
+Licensed under the Apache License 2.0.
 
 ## Build
 
