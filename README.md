@@ -54,7 +54,7 @@ or runnable commands with it.
 
 ```sh
 mini-code --global config set api-key sk_ant_xx23982932
-mini-code config set editor vim          # writes to this folder's local config
+mini-code config set max-output-tokens 32000   # writes to this folder's local config
 mini-code config get api-key             # effective value across scopes
 mini-code config list                    # all effective values
 mini-code config list --show-origin      # prefix each entry with its scope

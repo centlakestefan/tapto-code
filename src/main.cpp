@@ -118,9 +118,27 @@ std::vector<EffectiveEntry> effective_config() {
     return merged;
 }
 
+// Config keys mini-code understands; `config set` rejects anything else.
+bool is_supported_config_key(const std::string& key) {
+    static const char* kKeys[] = {
+        "provider-type", "api-key", "provider-url", "model",
+        "max-output-tokens", "system-prompt", "trace-file",
+    };
+    for (const char* k : kKeys) {
+        if (key == k) return true;
+    }
+    return false;
+}
+
 int cmd_set(const Args& a) {
     if (a.positional.size() < 3) {
         std::cerr << "error: 'set' requires <key> <value>\n";
+        return 2;
+    }
+    if (!is_supported_config_key(a.positional[1])) {
+        std::cerr << "error: unknown config key '" << a.positional[1]
+                  << "'.\n  supported keys: provider-type, api-key, provider-url, "
+                     "model, max-output-tokens, system-prompt, trace-file\n";
         return 2;
     }
     Level level = a.level.value_or(Level::Local);
