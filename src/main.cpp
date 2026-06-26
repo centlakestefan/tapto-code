@@ -25,6 +25,22 @@ using namespace minicode;
 
 namespace {
 
+// On Windows, make the console interpret ANSI/VT escape sequences (colors,
+// cursor) and treat output as UTF-8 so Unicode in model replies (box-drawing
+// table borders, em-dashes, emoji) renders instead of turning into mojibake.
+// Safe no-op when output is redirected to a file or pipe.
+void enable_console_features() {
+#ifdef _WIN32
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD mode = 0;
+    if (out != INVALID_HANDLE_VALUE && GetConsoleMode(out, &mode)) {
+        SetConsoleMode(out, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+    }
+#endif
+}
+
 const char* kUsage =
     "mini-code - a small cross-platform CLI\n"
     "\n"
@@ -418,6 +434,8 @@ int cmd_chat() {
 } // namespace
 
 int main(int argc, char** argv) {
+    enable_console_features();
+
     // The `command` subcommand is parsed specially: `command add` takes its
     // command line verbatim (it may contain tokens like --build or --config),
     // so we must not run it through the general flag extraction below. Only a
