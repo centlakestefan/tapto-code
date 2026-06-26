@@ -221,6 +221,40 @@ api-key = sk_ant_xx23982932
 model = claude-sonnet-4-6
 ```
 
+## Part of TaptoMatic
+
+mini-code is a small, standalone spin-off of
+[TaptoMatic](https://taptomatic.com) — a larger AI-powered development platform
+from Centlake Software AB where teams of AI agents collaborate on software
+projects under your direction. Where mini-code is a single-binary CLI you point
+at a folder, TaptoMatic is a local platform (web GUI) built around *structured
+autonomy*: you set the direction with goals and tasks, and agents do the work.
+
+- **Multi-agent teams** — assemble teams of agents with distinct roles that write
+  code in parallel, review each other's work, and retry until a team leader
+  approves. A task database with parent/child and dependency relationships keeps
+  everything coordinated.
+- **Goal-driven development** — define high-level goals; a goal agent tracks
+  completion percentage and spawns tasks as needed.
+- **Isolated build engines** — a separate build engine compiles and tests your
+  code; the Podman engine adds container isolation and disables network access
+  during the build/test phases. Polyglot and auto-detected: C/C++ (CMake, Bazel),
+  Java (Maven, Gradle), Go, Rust, Python, JavaScript/Node.
+- **Built-in Git** — every project has an internal Git repository; agents work in
+  isolated Git worktrees and integrate approved changes into the development
+  branch. External GitLab connections are supported.
+- **Documents with semantic search** — a structured, versioned document store
+  (draft → archived) so design docs and requirements stay organized instead of
+  scattered as `.md` files. Semantic search uses AI embeddings (VoyageAI, ranked
+  by cosine similarity) alongside Groonga full-text keyword search.
+- **Chat and MCP** — plan interactively, or drive it from Claude Code and other
+  MCP-compatible tools via the built-in MCP server.
+
+Like mini-code, TaptoMatic runs locally and uses your own provider API keys
+(Claude, OpenAI, Gemini, or a local inference server) — your code only leaves
+your machine to call those APIs. It's currently in preview; see
+[taptomatic.com](https://taptomatic.com).
+
 ## License
 
 mini-code is licensed under the Apache License, Version 2.0 (SPDX:
