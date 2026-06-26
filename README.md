@@ -7,6 +7,9 @@ approved — all from a single self-contained C++17 binary.
 
 **Highlights**
 
+- **No permission prompts** — it never interrupts to ask. Its reach is bounded by
+  design instead: run it in a folder and it stays there, and it only runs the
+  commands you configured beforehand.
 - **Multiple providers** — Claude, OpenAI, or Gemini, chosen via config; the API
   key is read from an environment variable or config.
 - **File tools** — the model can view, create, and edit files and search the
