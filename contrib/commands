@@ -1,0 +1,45 @@
+# mini-code — starter command set (security-conscious)
+#
+# Copy this to your global commands store (~/.minicode/commands) or append the
+# lines you want. See contrib/README.md for details.
+#
+# Each command does ONE specific thing. Placeholders appear only at data
+# positions (e.g. a commit message), never where they could become a flag or
+# subcommand — so e.g. `git-commit` can never become `git push --force`.
+#
+# Only commands that terminate are included: run_command waits for the process
+# to exit, so dev servers / --watch modes would hang. Add those yourself if you
+# have a way to bound them.
+
+# --- git ---
+git-status = git status
+git-diff = git diff
+git-log = git log --oneline -n 20
+git-add-all = git add -A
+git-commit = git commit -m %1
+git-pull = git pull
+git-push = git push
+
+# --- npm (scripts must terminate; no dev/start) ---
+npm-install = npm install
+npm-ci = npm ci
+npm-build = npm run build
+npm-test = npm run test
+npm-lint = npm run lint
+npm-typecheck = npm run typecheck
+
+# --- CMake ---
+cmake-configure = cmake -S . -B build
+cmake-build = cmake --build build
+ctest = ctest --test-dir build --output-on-failure
+
+# --- Bazel ---
+bazel-build = bazel build //...
+bazel-test = bazel test //...
+
+# --- Cargo / Go / Python ---
+cargo-build = cargo build
+cargo-test = cargo test
+go-build = go build ./...
+go-test = go test ./...
+py-test = python -m pytest

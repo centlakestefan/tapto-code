@@ -172,6 +172,10 @@ mini-code command list                 # merged, with scope of each
 mini-code command remove build-debug
 ```
 
+To get started quickly, [`contrib/commands`](contrib/commands) is a curated,
+security-conscious starter set (git, npm, cmake, bazel, cargo, go, …) you can
+copy into your global store — see [contrib/README.md](contrib/README.md).
+
 Everything after the name is captured verbatim as the command line (so flags
 like `--config Debug` are part of the command, not parsed by mini-code). In a
 chat the agent discovers them via `list_commands` and runs them via
