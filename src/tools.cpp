@@ -590,15 +590,14 @@ std::string win_quote_arg(const std::string& a) {
 }
 
 // Run argv directly (no shell) and capture stdout+stderr.
-std::string exec_capture(const std::vector<std::string>& argv, int& exit_code) {
-    std::string cmdline;
-    for (size_t i = 0; i < argv.size(); ++i) { if (i) cmdline += ' '; cmdline += win_quote_arg(argv[i]); }
-
+// Launch one command line, capturing stdout+stderr. On success returns true and
+// fills out/code; if the process couldn't be started returns false and sets err.
+bool win_launch(const std::string& cmdline, std::string& out, int& code, DWORD& err) {
     SECURITY_ATTRIBUTES sa{};
     sa.nLength = sizeof(sa);
     sa.bInheritHandle = TRUE;
     HANDLE rd = nullptr, wr = nullptr;
-    if (!CreatePipe(&rd, &wr, &sa, 0)) { exit_code = -1; return "ERROR: CreatePipe failed"; }
+    if (!CreatePipe(&rd, &wr, &sa, 0)) { err = GetLastError(); return false; }
     SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
 
     STARTUPINFOW si{};
@@ -615,27 +614,44 @@ std::string exec_capture(const std::vector<std::string>& argv, int& exit_code) {
 
     BOOL ok = CreateProcessW(nullptr, buf.data(), nullptr, nullptr, TRUE,
                              CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+    if (!ok) { err = GetLastError(); CloseHandle(wr); CloseHandle(rd); return false; }
     CloseHandle(wr);
-    if (!ok) {
-        CloseHandle(rd);
-        exit_code = -1;
-        return "ERROR: failed to start '" + argv[0] + "' (CreateProcess error " +
-               std::to_string(GetLastError()) + ")";
-    }
 
-    std::string out;
+    out.clear();
     char chunk[4096];
     DWORD n = 0;
     while (ReadFile(rd, chunk, sizeof(chunk), &n, nullptr) && n > 0) out.append(chunk, n);
     CloseHandle(rd);
 
     WaitForSingleObject(pi.hProcess, INFINITE);
-    DWORD code = 0;
-    GetExitCodeProcess(pi.hProcess, &code);
-    exit_code = static_cast<int>(code);
+    DWORD c = 0;
+    GetExitCodeProcess(pi.hProcess, &c);
+    code = static_cast<int>(c);
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
-    return out;
+    return true;
+}
+
+std::string exec_capture(const std::vector<std::string>& argv, int& exit_code) {
+    std::string cmdline;
+    for (size_t i = 0; i < argv.size(); ++i) { if (i) cmdline += ' '; cmdline += win_quote_arg(argv[i]); }
+
+    std::string out;
+    DWORD err = 0;
+    if (win_launch(cmdline, out, exit_code, err)) return out;
+
+    // Batch wrappers (.cmd/.bat such as npm, npx, yarn) and shell builtins can't
+    // be launched by CreateProcess directly; if the program wasn't found, retry
+    // through cmd.exe, which resolves them via PATHEXT. (/s + surrounding quotes
+    // makes cmd run the rest of the line verbatim.)
+    if (err == ERROR_FILE_NOT_FOUND) {
+        std::string viacmd = "cmd.exe /s /c \"" + cmdline + "\"";
+        if (win_launch(viacmd, out, exit_code, err)) return out;
+    }
+
+    exit_code = -1;
+    return "ERROR: failed to start '" + argv[0] + "' (CreateProcess error " +
+           std::to_string(err) + ")";
 }
 #else
 // Run argv directly (no shell) and capture stdout+stderr.

@@ -189,6 +189,10 @@ can contain spaces, quotes, `&`, `|`, `%`, etc. and is passed through verbatim â
 nothing is re-interpreted by a shell. (A command **without** placeholders still
 runs through the shell, so it can use pipes and redirection.)
 
+On Windows, batch wrappers like `npm`, `npx`, and `yarn` are `.cmd` files that
+can't be launched directly; parameterized commands targeting them are run via
+`cmd.exe` automatically, so `npm %*` just works.
+
 Because values are literal arguments, the model cannot inject extra commands.
 Put placeholders only at *data* positions, not where they could become a flag
 or subcommand (`git commit -m %1` is fine; `git %1` lets the model choose the
