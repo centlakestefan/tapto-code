@@ -17,6 +17,13 @@ Makefile
 .vscode/
 .idea/
 
+# Local Visual Studio project/solution files (machine-specific; CMake is canonical)
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.sln
+/build-ide/
+
 # Local store is now central (~/.minicode/projects); kept as a safety net so a
 # stray or legacy ./.minicode is never committed.
 .minicode/
