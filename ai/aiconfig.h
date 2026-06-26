@@ -17,7 +17,7 @@ public:
     void setOpenaiReadTimeoutSeconds(int v) { m_readTimeoutSeconds = v; }
 
 private:
-    int m_maxOutputTokens = 4096;
+    int m_maxOutputTokens = 16000;
     int m_maxToolIterations = 50;
     int m_connectionTimeoutSeconds = 30;
     int m_readTimeoutSeconds = 300;

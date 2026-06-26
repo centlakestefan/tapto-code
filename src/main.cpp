@@ -64,7 +64,7 @@ const char* kUsage =
     "  version             Print version info as JSON\n"
     "\n"
     "Chat config keys: provider-type (claude|openai|gemini), api-key,\n"
-    "  provider-url (optional), model (optional)\n"
+    "  provider-url (optional), model (optional), max-output-tokens (optional)\n"
     "\n"
     "Scope flags:\n"
     "  --system   machine-wide config\n"
@@ -346,6 +346,13 @@ int cmd_chat() {
     // ai_config is declared before client so it outlives the client, which
     // holds a pointer to it.
     AiConfig ai_config;
+    if (auto v = get_effective("max-output-tokens")) {
+        try {
+            ai_config.setMaxOutputTokens(std::stoi(*v));
+        } catch (const std::exception&) {
+            std::cerr << "warning: invalid max-output-tokens '" << *v << "', using default\n";
+        }
+    }
     std::unique_ptr<AiBackend> client;
     if (*provider == "claude") {
         client = std::make_unique<ClaudeClient>(&ai_config, url, model, *api_key);

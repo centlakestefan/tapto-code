@@ -54,7 +54,7 @@ std::string sanitizeUtf8(const std::string& in) {
 std::string sanitizeToolResult(const std::string& result, const std::string& tool_name) {
     std::string clean = sanitizeUtf8(result);
     if (clean.size() != result.size()) {
-        Log::instance().write("WARN: tool '" + tool_name + "' returned non-UTF-8 bytes; sanitizing with U+FFFD\n");
+        mclog("WARN: tool '" + tool_name + "' returned non-UTF-8 bytes; sanitizing with U+FFFD\n");
     }
     return clean;
 }
@@ -65,12 +65,12 @@ ClaudeClient::ClaudeClient(const AiConfig* config, const std::string& url, const
     : m_config(config), m_model(model), m_apiKeyRef(apiKey) {
     m_url = url;
 
-    Log::instance().write("ClaudeClient initialized with url=" + m_url + "\n");
+    mclog("ClaudeClient initialized with url=" + m_url + "\n");
 }
 
 /// <summary>Initializes the persistent client with proper timeout and keep-alive settings.</summary>
 void ClaudeClient::init_api_client() {
-    Log::instance().write("Initializing API client connection to " + m_url + "\n");
+    mclog("Initializing API client connection to " + m_url + "\n");
 
     m_api_client = std::make_unique<httplib::Client>(m_url);
 
@@ -78,7 +78,7 @@ void ClaudeClient::init_api_client() {
     m_api_client->set_read_timeout(READ_TIMEOUT_SECONDS);
     m_api_client->set_keep_alive(true);
 
-    Log::instance().write("API client initialized with keep-alive enabled\n");
+    mclog("API client initialized with keep-alive enabled\n");
 }
 
 /// <summary>Returns the configured Claude API key.</summary>
@@ -183,11 +183,11 @@ json ClaudeClient::call_claude(const std::string& user_message, const json& tool
             std::ostringstream log_msg;
             log_msg << "Connection failed (attempt " << (connection_retry_count + 1)
                    << "/" << MAX_CONNECTION_RETRIES << "): " << error_msg << "\n";
-            Log::instance().write(log_msg.str());
+            mclog(log_msg.str());
 
             // Check if we should retry
             if (connection_retry_count >= MAX_CONNECTION_RETRIES) {
-                Log::instance().write("Exceeded maximum connection retries\n");
+                mclog("Exceeded maximum connection retries\n");
                 std::ostringstream exception_msg;
                 exception_msg << "Connection failed after " << MAX_CONNECTION_RETRIES
                             << " retries: " << error_msg;
@@ -197,7 +197,7 @@ json ClaudeClient::call_claude(const std::string& user_message, const json& tool
             connection_retry_count++;
 
             // Reinitialize connection on connection failure
-            Log::instance().write("Reinitializing API client connection...\n");
+            mclog("Reinitializing API client connection...\n");
             init_api_client();
 
             // Exponential backoff for connection retries: 2, 4, 8, 16, 32 seconds
@@ -205,7 +205,7 @@ json ClaudeClient::call_claude(const std::string& user_message, const json& tool
 
             std::ostringstream retry_msg;
             retry_msg << "Retrying in " << wait_seconds << " seconds...\n";
-            Log::instance().write(retry_msg.str());
+            mclog(retry_msg.str());
 
             std::this_thread::sleep_for(std::chrono::seconds(wait_seconds));
             continue;
@@ -227,7 +227,7 @@ json ClaudeClient::call_claude(const std::string& user_message, const json& tool
             if (rate_limit_retries >= MAX_RATE_LIMIT_RETRIES) {
                 std::ostringstream err;
                 err << "Exceeded maximum rate limit retries (" << MAX_RATE_LIMIT_RETRIES << ")\n";
-                Log::instance().write(err.str());
+                mclog(err.str());
                 throw std::runtime_error("Exceeded maximum rate limit retries");
             }
             rate_limit_retries++;
@@ -242,7 +242,7 @@ json ClaudeClient::call_claude(const std::string& user_message, const json& tool
                 catch (const std::exception& e) {
                     std::ostringstream err;
                     err << "Failed to parse retry-after header: " << e.what() << "\n";
-                    Log::instance().write(err.str());
+                    mclog(err.str());
                     wait_seconds = 0;
                 }
             }
@@ -256,7 +256,7 @@ json ClaudeClient::call_claude(const std::string& user_message, const json& tool
             std::ostringstream log_msg;
             log_msg << "Rate limited (attempt " << rate_limit_retries << "/" << MAX_RATE_LIMIT_RETRIES
                    << "). Waiting " << wait_seconds << " seconds before retry\n";
-            Log::instance().write(log_msg.str());
+            mclog(log_msg.str());
 
             std::this_thread::sleep_for(std::chrono::seconds(wait_seconds));
             continue;
@@ -267,7 +267,7 @@ json ClaudeClient::call_claude(const std::string& user_message, const json& tool
             std::string error_detail = res->body.length() > 500 ? res->body.substr(0, 500) + "..." : res->body;
             std::ostringstream log_msg;
             log_msg << "Client error " << status << ": " << error_detail << "\n";
-            Log::instance().write(log_msg.str());
+            mclog(log_msg.str());
 
             std::ostringstream exception_msg;
             switch (status) {
@@ -296,7 +296,7 @@ json ClaudeClient::call_claude(const std::string& user_message, const json& tool
                 std::string error_detail = res->body.length() > 500 ? res->body.substr(0, 500) + "..." : res->body;
                 std::ostringstream err;
                 err << "Exceeded maximum server error retries (" << MAX_SERVER_ERROR_RETRIES << ")\n";
-                Log::instance().write(err.str());
+                mclog(err.str());
 
                 std::ostringstream exception_msg;
                 exception_msg << "Server error (" << status << ") after "
@@ -315,7 +315,7 @@ json ClaudeClient::call_claude(const std::string& user_message, const json& tool
                 catch (const std::exception& e) {
                     std::ostringstream err;
                     err << "Failed to parse retry-after header: " << e.what() << "\n";
-                    Log::instance().write(err.str());
+                    mclog(err.str());
                     wait_seconds = 0;
                 }
             }
@@ -339,7 +339,7 @@ json ClaudeClient::call_claude(const std::string& user_message, const json& tool
             log_msg << error_msg << " (" << status << ") - attempt "
                    << server_error_retries << "/" << MAX_SERVER_ERROR_RETRIES
                    << ". Retrying in " << wait_seconds << " seconds\n";
-            Log::instance().write(log_msg.str());
+            mclog(log_msg.str());
 
             std::this_thread::sleep_for(std::chrono::seconds(wait_seconds));
             continue;
@@ -347,7 +347,7 @@ json ClaudeClient::call_claude(const std::string& user_message, const json& tool
 
         // Unknown status code
         std::string error_detail = res->body.length() > 500 ? res->body.substr(0, 500) + "..." : res->body;
-        Log::instance().write("Unexpected HTTP status " + std::to_string(status) + ": " + error_detail + "\n");
+        mclog("Unexpected HTTP status " + std::to_string(status) + ": " + error_detail + "\n");
         throw std::runtime_error("Unexpected HTTP status " + std::to_string(status) + ": " + error_detail);
     }
 }
@@ -368,7 +368,7 @@ std::string ClaudeClient::chat(Context& context, const std::string& user_message
         m_tools.push_back(tool);
     }
 
-    Log::instance().write("Start " + user_message + " ===\n");
+    mclog("Start " + user_message + " ===\n");
 
     // Same-line progress feedback: "Thinking..." while waiting on the API and
     // "[tool] ..." while a tool actually runs.
@@ -379,6 +379,14 @@ std::string ClaudeClient::chat(Context& context, const std::string& user_message
         if (!printed_status) std::cout << "\x1b[?25l"; // hide cursor during the wait
         std::cout << "\r" << s << "\x1b[K" << std::flush; // erase to end of line (no padding)
         printed_status = true;
+    };
+
+    auto has_tool_use = [](const json& resp) {
+        if (!resp.contains("content")) return false;
+        for (const auto& b : resp["content"]) {
+            if (b.value("type", std::string()) == "tool_use") return true;
+        }
+        return false;
     };
 
     // Use Claude-native tool schemas when talking to Anthropic, generic otherwise.
@@ -411,17 +419,18 @@ std::string ClaudeClient::chat(Context& context, const std::string& user_message
         {"content", response["content"]}
         });
 
-    // Tool loop: keep going while the model requests tools. Terminates as soon
-    // as the model ends its turn without a tool_use block.
-    while (response["stop_reason"] == "tool_use" && iteration < max_iterations) {
+    // Tool loop: keep going while the model's latest message contains a tool_use
+    // block. Driving on presence (rather than stop_reason) means a turn cut off
+    // by max_tokens that still carries a tool_use is handled, not orphaned.
+    while (has_tool_use(response) && iteration < max_iterations) {
         iteration++;
-        Log::instance().write("=== Iteration " + std::to_string(iteration) + " ===\n");
+        mclog("=== Iteration " + std::to_string(iteration) + " ===\n");
 
         json tool_results = json::array();
 
         for (const auto& block : response["content"]) {
             if (block["type"] == "text") {
-                Log::instance().write("assistant says: " + block["text"].get<std::string>() + "\n");
+                mclog("assistant says: " + block["text"].get<std::string>() + "\n");
             }
             else if (block["type"] == "tool_use") {
                 std::string tool_name = block["name"];
@@ -429,8 +438,8 @@ std::string ClaudeClient::chat(Context& context, const std::string& user_message
                 json tool_input = block["input"];
 
                 set_status("[tool] " + getToolDisplayName(tool_name, tool_input));
-                Log::instance().write("Executing tool: " + tool_name + "\n");
-                Log::instance().write("Input: " + tool_input.dump(2) + "\n");
+                mclog("Executing tool: " + tool_name + "\n");
+                mclog("Input: " + tool_input.dump(2) + "\n");
 
                 std::string result;
                 auto it = m_tool_registry.find(tool_name);
@@ -440,12 +449,12 @@ std::string ClaudeClient::chat(Context& context, const std::string& user_message
                     }
                     catch (const std::exception& e) {
                         result = "ERROR: Tool execution failed: " + std::string(e.what());
-                        Log::instance().write("Tool execution exception: " + std::string(e.what()) + "\n");
+                        mclog("Tool execution exception: " + std::string(e.what()) + "\n");
                     }
                 }
                 else {
                     result = formatUnknownToolError(tool_name, m_tool_registry);
-                    Log::instance().write("Unknown tool requested: " + tool_name + "\n");
+                    mclog("Unknown tool requested: " + tool_name + "\n");
                 }
 
                 tool_results.push_back({
@@ -474,10 +483,27 @@ std::string ClaudeClient::chat(Context& context, const std::string& user_message
     }
 
     if (iteration >= max_iterations) {
-        Log::instance().write("Warning: Reached maximum iterations\n");
+        mclog("Warning: Reached maximum iterations\n");
     }
 
-    Log::instance().write("=== Final Response === " + response.value("stop_reason", std::string("unknown")) + "\n");
+    // If we stopped with an unanswered tool_use (iteration cap), answer it with a
+    // synthetic result so the conversation stays valid on the next turn — Claude
+    // requires a tool_result after every tool_use.
+    if (has_tool_use(response)) {
+        json tool_results = json::array();
+        for (const auto& block : response["content"]) {
+            if (block.value("type", std::string()) == "tool_use") {
+                tool_results.push_back({
+                    {"type", "tool_result"},
+                    {"tool_use_id", block.value("id", std::string())},
+                    {"content", "Tool not run: iteration limit reached."}
+                });
+            }
+        }
+        m_conversation_history.push_back({{"role", "user"}, {"content", tool_results}});
+    }
+
+    mclog("=== Final Response === " + response.value("stop_reason", std::string("unknown")) + "\n");
 
     // Clear the progress line and restore the cursor before the reply prints.
     if (printed_status) std::cout << "\r\x1b[K\x1b[?25h" << std::flush;
@@ -489,13 +515,16 @@ std::string ClaudeClient::chat(Context& context, const std::string& user_message
             reply += block.value("text", std::string());
         }
     }
+    if (response.value("stop_reason", std::string()) == "max_tokens") {
+        reply += "\n[truncated: hit max output tokens - raise max-output-tokens]";
+    }
     return reply;
 }
 
 /// <summary>Starts a new conversation by clearing the conversation history.</summary>
 void ClaudeClient::start() {
     m_conversation_history = json::array();
-    Log::instance().write("Started new conversation (history cleared)\n");
+    mclog("Started new conversation (history cleared)\n");
 }
 
 /// <summary>Checks if conversation history exists.</summary>
@@ -506,12 +535,12 @@ bool ClaudeClient::hasHistory() const {
 /// <summary>Loads conversation history from stored format.</summary>
 void ClaudeClient::loadHistory(const json& history) {
     if (!history.is_array()) {
-        Log::instance().write("ERROR: Invalid history format - expected array\n");
+        mclog("ERROR: Invalid history format - expected array\n");
         return;
     }
 
     m_conversation_history = history;
-    Log::instance().write("Loaded conversation history with " + std::to_string(history.size()) + " messages\n");
+    mclog("Loaded conversation history with " + std::to_string(history.size()) + " messages\n");
 }
 
 /// <summary>Gets the current conversation history.</summary>
@@ -522,18 +551,18 @@ json ClaudeClient::getHistory() const {
 /// <summary>Sets the model for Claude client.</summary>
 void ClaudeClient::setModel(const std::string& model) {
     m_model = model;
-    Log::instance().write("ClaudeClient model updated to: " + model + "\n");
+    mclog("ClaudeClient model updated to: " + model + "\n");
 }
 
 /// <summary>Sets the host URL for Claude client and resets the API client.</summary>
 void ClaudeClient::setHost(const std::string& host) {
     m_url = host;
     m_api_client.reset();  // Reset client to force re-initialization with new URL
-    Log::instance().write("ClaudeClient host updated to: " + host + " (API client reset)\n");
+    mclog("ClaudeClient host updated to: " + host + " (API client reset)\n");
 }
 
 /// <summary>Sets the API key for Claude client.</summary>
 void ClaudeClient::setApiKeyRef(const std::string& apiKey) {
     m_apiKeyRef = apiKey;
-    Log::instance().write("ClaudeClient API key updated\n");
+    mclog("ClaudeClient API key updated\n");
 }

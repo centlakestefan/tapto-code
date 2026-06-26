@@ -80,6 +80,11 @@ Chat config keys:
 | `api-key`       | yes      | —                                                   |
 | `provider-url`  | no       | claude: `https://api.anthropic.com`, openai: `https://api.openai.com`, gemini: `https://generativelanguage.googleapis.com` |
 | `model`         | no       | claude: `claude-sonnet-4-6`, openai: `gpt-4o`, gemini: `gemini-2.0-flash` |
+| `max-output-tokens` | no   | `16000` — raise it for long replies (large tables, reports) |
+
+If a reply hits the output-token limit it is cut off and marked
+`[truncated: hit max output tokens - raise max-output-tokens]`; raise
+`max-output-tokens` to allow longer responses.
 
 ### Tools
 

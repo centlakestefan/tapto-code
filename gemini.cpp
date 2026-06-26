@@ -18,7 +18,7 @@ GeminiClient::GeminiClient(const AiConfig* config, const std::string& url, const
     : m_config(config), m_model(model), m_apiKeyRef(apiKey) {
     m_url = url;
 
-    Log::instance().write("GeminiClient initialized with url=" + m_url + "\n");
+    mclog("GeminiClient initialized with url=" + m_url + "\n");
     // API client is created lazily on first chat() call (matches Claude/OpenAI).
 }
 
@@ -26,7 +26,7 @@ GeminiClient::GeminiClient(const AiConfig* config, const std::string& url, const
  * @brief Initializes the persistent client for API connection reuse.
  */
 void GeminiClient::init_api_client() {
-    Log::instance().write("Initializing Gemini API client connection to " + m_url + "\n");
+    mclog("Initializing Gemini API client connection to " + m_url + "\n");
 
     m_api_client = std::make_unique<httplib::Client>(m_url);
 
@@ -34,7 +34,7 @@ void GeminiClient::init_api_client() {
     m_api_client->set_read_timeout(120);
     m_api_client->set_keep_alive(true);
 
-    Log::instance().write("Gemini API client initialized with keep-alive enabled\n");
+    mclog("Gemini API client initialized with keep-alive enabled\n");
 }
 
 /**
@@ -141,7 +141,7 @@ nlohmann::json GeminiClient::call_gemini(
         // Connection error (no response): reinitialize and retry with backoff.
         if (!res) {
             std::string error_msg = httplib::to_string(res.error());
-            Log::instance().write("Connection failed (attempt " + std::to_string(connection_retry_count + 1) +
+            mclog("Connection failed (attempt " + std::to_string(connection_retry_count + 1) +
                                   "/" + std::to_string(max_connection_retries) + "): " + error_msg + "\n");
 
             if (connection_retry_count >= max_connection_retries) {
@@ -166,7 +166,7 @@ nlohmann::json GeminiClient::call_gemini(
             if (rate_limit_retries >= max_rate_limit_retries) {
                 std::ostringstream err;
                 err << "Exceeded maximum rate limit retries (" << max_rate_limit_retries << ")\n";
-                Log::instance().write(err.str());
+                mclog(err.str());
                 throw std::runtime_error("Exceeded maximum rate limit retries");
             }
             rate_limit_retries++;
@@ -181,7 +181,7 @@ nlohmann::json GeminiClient::call_gemini(
                 catch (const std::exception& e) {
                     std::ostringstream err;
                     err << "Failed to parse retry-after header: " << e.what() << "\n";
-                    Log::instance().write(err.str());
+                    mclog(err.str());
                     wait_seconds = 0;
                 }
             }
@@ -195,7 +195,7 @@ nlohmann::json GeminiClient::call_gemini(
             std::ostringstream log_msg;
             log_msg << "Rate limited (attempt " << rate_limit_retries << "/" << max_rate_limit_retries
                    << "). Waiting " << wait_seconds << " seconds before retry\n";
-            Log::instance().write(log_msg.str());
+            mclog(log_msg.str());
 
             std::this_thread::sleep_for(std::chrono::seconds(wait_seconds));
             continue;
@@ -207,7 +207,7 @@ nlohmann::json GeminiClient::call_gemini(
                 std::string error_detail = res->body.length() > 500 ? res->body.substr(0, 500) + "..." : res->body;
                 std::ostringstream err;
                 err << "Exceeded maximum server error retries (" << max_server_error_retries << ")\n";
-                Log::instance().write(err.str());
+                mclog(err.str());
 
                 std::ostringstream exception_msg;
                 exception_msg << "Server error (" << res->status << ") after "
@@ -232,7 +232,7 @@ nlohmann::json GeminiClient::call_gemini(
             log_msg << error_msg << " (" << res->status << ") - attempt "
                    << server_error_retries << "/" << max_server_error_retries
                    << ". Retrying in " << wait_seconds << " seconds\n";
-            Log::instance().write(log_msg.str());
+            mclog(log_msg.str());
 
             std::this_thread::sleep_for(std::chrono::seconds(wait_seconds));
             continue;
@@ -240,7 +240,7 @@ nlohmann::json GeminiClient::call_gemini(
 
         // Unknown / non-retryable status code
         std::string error_detail = res->body.length() > 500 ? res->body.substr(0, 500) + "..." : res->body;
-        Log::instance().write("Unexpected HTTP status " + std::to_string(res->status) + ": " + error_detail + "\n");
+        mclog("Unexpected HTTP status " + std::to_string(res->status) + ": " + error_detail + "\n");
         throw std::runtime_error("Unexpected HTTP status " + std::to_string(res->status) + ": " + error_detail);
     }
 }
@@ -266,7 +266,7 @@ std::string GeminiClient::chat(Context& context, const std::string& user_message
         m_tools.push_back(tool);
     }
 
-    Log::instance().write("Start " + user_message + " ===\n");
+    mclog("Start " + user_message + " ===\n");
 
     // Same-line progress feedback: "Thinking..." while waiting on the API and
     // "[tool] ..." while a tool actually runs.
@@ -302,7 +302,7 @@ std::string GeminiClient::chat(Context& context, const std::string& user_message
 
     set_status("Thinking...");
     json response = call_gemini("", tool_schemas, m_conversation_history);
-    Log::instance().write("Gemini API response body: " + response.dump(2) + "\n");
+    mclog("Gemini API response body: " + response.dump(2) + "\n");
 
     json candidate = response["candidates"][0];
     json model_response_message = {
@@ -329,7 +329,7 @@ std::string GeminiClient::chat(Context& context, const std::string& user_message
         for (const auto& part : model_response_message["parts"]) {
             if (part.contains("text")) {
                 has_text = true;
-                Log::instance().write("assistant says: " + part["text"].get<std::string>() + "\n");
+                mclog("assistant says: " + part["text"].get<std::string>() + "\n");
             }
             if (part.contains("functionCall")) {
                 tool_calls.push_back(part["functionCall"]);
@@ -341,14 +341,14 @@ std::string GeminiClient::chat(Context& context, const std::string& user_message
             break;
         }
         if (!has_text) {
-            Log::instance().write("WARNING: Model called tools without providing text explanation\n");
+            mclog("WARNING: Model called tools without providing text explanation\n");
         }
 
         // Count an iteration only when tools actually run, so the budget matches
         // Claude/OpenAI (which count tool rounds, not the terminal text turn).
         if (iteration >= max_iterations) break;
         iteration++;
-        Log::instance().write("=== Gemini Iteration " + std::to_string(iteration) + " ===\n");
+        mclog("=== Gemini Iteration " + std::to_string(iteration) + " ===\n");
 
         json tool_response_parts = json::array();
 
@@ -357,8 +357,8 @@ std::string GeminiClient::chat(Context& context, const std::string& user_message
             json args = func_call.value("args", json::object());
 
             set_status("[tool] " + getToolDisplayName(tool_name, args));
-            Log::instance().write("Executing tool: " + tool_name + "\n");
-            Log::instance().write("Input: " + args.dump(2) + "\n");
+            mclog("Executing tool: " + tool_name + "\n");
+            mclog("Input: " + args.dump(2) + "\n");
 
             std::string result;
             auto it = m_tool_registry.find(tool_name);
@@ -368,12 +368,12 @@ std::string GeminiClient::chat(Context& context, const std::string& user_message
                 }
                 catch (const std::exception& e) {
                     result = "ERROR: Tool execution failed: " + std::string(e.what());
-                    Log::instance().write("Tool execution exception: " + std::string(e.what()) + "\n");
+                    mclog("Tool execution exception: " + std::string(e.what()) + "\n");
                 }
             }
             else {
                 result = formatUnknownToolError(tool_name, m_tool_registry);
-                Log::instance().write("Unknown tool requested: " + tool_name + "\n");
+                mclog("Unknown tool requested: " + tool_name + "\n");
             }
 
             // Format the tool result as a function_response part for Gemini
@@ -397,7 +397,7 @@ std::string GeminiClient::chat(Context& context, const std::string& user_message
 
         set_status("Thinking...");
         response = call_gemini("", tool_schemas, m_conversation_history);
-        Log::instance().write("Gemini API response body: " + response.dump(2) + "\n");
+        mclog("Gemini API response body: " + response.dump(2) + "\n");
 
         candidate = response["candidates"][0];
         model_response_message = {
@@ -417,10 +417,29 @@ std::string GeminiClient::chat(Context& context, const std::string& user_message
     }
 
     if (iteration >= max_iterations) {
-        Log::instance().write("Warning: Reached maximum iterations\n");
+        mclog("Warning: Reached maximum iterations\n");
     }
 
-    Log::instance().write("=== Final Response ===" + finish_reason + "\n");
+    // If we stopped with unanswered function calls (iteration cap), answer them
+    // so the conversation stays valid on the next turn.
+    {
+        json pending = json::array();
+        for (const auto& part : model_response_message["parts"]) {
+            if (part.contains("functionCall")) {
+                pending.push_back({
+                    {"functionResponse", {
+                        {"name", part["functionCall"].value("name", std::string())},
+                        {"response", {{"content", "Tool not run: iteration limit reached."}}}
+                    }}
+                });
+            }
+        }
+        if (!pending.empty()) {
+            m_conversation_history.push_back({{"role", "user"}, {"parts", pending}});
+        }
+    }
+
+    mclog("=== Final Response ===" + finish_reason + "\n");
 
     // Clear the progress line and restore the cursor before the reply prints.
     if (printed_status) std::cout << "\r\x1b[K\x1b[?25h" << std::flush;
@@ -432,13 +451,16 @@ std::string GeminiClient::chat(Context& context, const std::string& user_message
             reply += part["text"].get<std::string>();
         }
     }
+    if (finish_reason == "MAX_TOKENS") {
+        reply += "\n[truncated: hit max output tokens - raise max-output-tokens]";
+    }
     return reply;
 }
 
 /// <summary>Starts a new conversation by clearing the conversation history.</summary>
 void GeminiClient::start() {
     m_conversation_history = json::array();
-    Log::instance().write("Started new conversation (history cleared)\n");
+    mclog("Started new conversation (history cleared)\n");
 }
 
 /// <summary>Checks if conversation history exists.</summary>
@@ -449,12 +471,12 @@ bool GeminiClient::hasHistory() const {
 /// <summary>Loads conversation history from stored format.</summary>
 void GeminiClient::loadHistory(const json& history) {
     if (!history.is_array()) {
-        Log::instance().write("ERROR: Invalid history format - expected array\n");
+        mclog("ERROR: Invalid history format - expected array\n");
         return;
     }
 
     m_conversation_history = history;
-    Log::instance().write("Loaded conversation history with " + std::to_string(history.size()) + " messages\n");
+    mclog("Loaded conversation history with " + std::to_string(history.size()) + " messages\n");
 }
 
 /// <summary>Gets the current conversation history.</summary>
@@ -465,18 +487,18 @@ json GeminiClient::getHistory() const {
 /// <summary>Sets the model for Gemini client.</summary>
 void GeminiClient::setModel(const std::string& model) {
     m_model = model;
-    Log::instance().write("GeminiClient model updated to: " + model + "\n");
+    mclog("GeminiClient model updated to: " + model + "\n");
 }
 
 /// <summary>Sets the host URL for Gemini client and resets the API client.</summary>
 void GeminiClient::setHost(const std::string& host) {
     m_url = host;
     m_api_client.reset();  // Reset client to force re-initialization with new URL
-    Log::instance().write("GeminiClient host updated to: " + host + " (API client reset)\n");
+    mclog("GeminiClient host updated to: " + host + " (API client reset)\n");
 }
 
 /// <summary>Sets the API key for Gemini client.</summary>
 void GeminiClient::setApiKeyRef(const std::string& apiKey) {
     m_apiKeyRef = apiKey;
-    Log::instance().write("GeminiClient API key updated\n");
+    mclog("GeminiClient API key updated\n");
 }

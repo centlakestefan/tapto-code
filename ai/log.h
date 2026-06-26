@@ -1,28 +1,45 @@
 #pragma once
 
-#include <iostream>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <string>
 
-// Minimal replacement for the original project's logfile. Off by default so the
-// CLI stays quiet; flip on with Log::setEnabled(true) for debugging. Writes to
-// stderr to keep stdout clean for command output.
-class Log {
-public:
-    static Log& instance() {
-        static Log log;
-        return log;
+// File-based diagnostic log. Replaces the old stderr Log singleton: everything
+// is appended to a log file so long sessions (and the request/response flow that
+// drives them) can be inspected after the fact.
+//
+// Location: $MINICODE_LOG if set, otherwise ~/.minicode/minicode.log.
+
+inline std::string mclog_path() {
+    if (const char* p = std::getenv("MINICODE_LOG")) {
+        if (*p) return p;
     }
+#ifdef _WIN32
+    const char* home = std::getenv("USERPROFILE");
+#else
+    const char* home = std::getenv("HOME");
+#endif
+    std::filesystem::path base = (home && *home) ? std::filesystem::path(home)
+                                                 : std::filesystem::path(".");
+    return (base / ".minicode" / "minicode.log").string();
+}
 
-    void write(const std::string& message) {
-        if (!s_enabled) return;
-        std::lock_guard<std::mutex> lock(s_mutex);
-        std::cerr << message;
+// Append a message to the log file (best-effort; failures are ignored). Call
+// sites include their own trailing newline.
+inline void mclog(const std::string& msg) {
+    static std::mutex mtx;
+    static std::ofstream out = [] {
+        std::filesystem::path p = mclog_path();
+        std::error_code ec;
+        if (p.has_parent_path()) std::filesystem::create_directories(p.parent_path(), ec);
+        return std::ofstream(p, std::ios::app);
+    }();
+
+    std::lock_guard<std::mutex> lock(mtx);
+    if (out) {
+        out << msg;
+        out.flush();
     }
-
-    static void setEnabled(bool enabled) { s_enabled = enabled; }
-
-private:
-    static inline bool s_enabled = false;
-    static inline std::mutex s_mutex;
-};
+}

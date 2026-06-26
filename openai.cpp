@@ -91,12 +91,12 @@ OpenAIClient::OpenAIClient(const AiConfig* config, const std::string& url, const
     : m_config(config), m_model(model), m_apiKeyRef(apiKey) {
     m_url = url;
 
-    Log::instance().write("OpenAIClient initialized with url=" + m_url + "\n");
+    mclog("OpenAIClient initialized with url=" + m_url + "\n");
 }
 
 /// <summary>Initializes the persistent client with proper timeout and keep-alive settings.</summary>
 void OpenAIClient::init_api_client() {
-    Log::instance().write("Initializing API client connection to " + m_url + "\n");
+    mclog("Initializing API client connection to " + m_url + "\n");
 
     m_api_client = std::make_unique<httplib::Client>(m_url);
 
@@ -104,7 +104,7 @@ void OpenAIClient::init_api_client() {
     m_api_client->set_read_timeout(m_config->openaiReadTimeoutSeconds());
     m_api_client->set_keep_alive(true);
 
-    Log::instance().write("API client initialized with keep-alive enabled\n");
+    mclog("API client initialized with keep-alive enabled\n");
 }
 
 /// <summary>Returns the configured OpenAI API key.</summary>
@@ -188,11 +188,11 @@ json OpenAIClient::call_openai(const std::string& user_message, const json& tool
             std::ostringstream log_msg;
             log_msg << "Connection failed (attempt " << (connection_retry_count + 1)
                    << "/" << MAX_CONNECTION_RETRIES << "): " << error_msg << "\n";
-            Log::instance().write(log_msg.str());
+            mclog(log_msg.str());
 
             // Check if we should retry
             if (connection_retry_count >= MAX_CONNECTION_RETRIES) {
-                Log::instance().write("Exceeded maximum connection retries\n");
+                mclog("Exceeded maximum connection retries\n");
                 std::ostringstream exception_msg;
                 exception_msg << "Connection failed after " << MAX_CONNECTION_RETRIES
                             << " retries: " << error_msg;
@@ -202,7 +202,7 @@ json OpenAIClient::call_openai(const std::string& user_message, const json& tool
             connection_retry_count++;
 
             // Reinitialize connection on connection failure
-            Log::instance().write("Reinitializing API client connection...\n");
+            mclog("Reinitializing API client connection...\n");
             init_api_client();
 
             // Exponential backoff for connection retries: 2, 4, 8, 16, 32 seconds
@@ -210,7 +210,7 @@ json OpenAIClient::call_openai(const std::string& user_message, const json& tool
 
             std::ostringstream retry_msg;
             retry_msg << "Retrying in " << wait_seconds << " seconds...\n";
-            Log::instance().write(retry_msg.str());
+            mclog(retry_msg.str());
 
             std::this_thread::sleep_for(std::chrono::seconds(wait_seconds));
             continue;
@@ -232,7 +232,7 @@ json OpenAIClient::call_openai(const std::string& user_message, const json& tool
             if (rate_limit_retries >= MAX_RATE_LIMIT_RETRIES) {
                 std::ostringstream err;
                 err << "Exceeded maximum rate limit retries (" << MAX_RATE_LIMIT_RETRIES << ")\n";
-                Log::instance().write(err.str());
+                mclog(err.str());
                 throw std::runtime_error("Exceeded maximum rate limit retries");
             }
             rate_limit_retries++;
@@ -247,7 +247,7 @@ json OpenAIClient::call_openai(const std::string& user_message, const json& tool
                 catch (const std::exception& e) {
                     std::ostringstream err;
                     err << "Failed to parse retry-after header: " << e.what() << "\n";
-                    Log::instance().write(err.str());
+                    mclog(err.str());
                     wait_seconds = 0;
                 }
             }
@@ -261,7 +261,7 @@ json OpenAIClient::call_openai(const std::string& user_message, const json& tool
             std::ostringstream log_msg;
             log_msg << "Rate limited (attempt " << rate_limit_retries << "/" << MAX_RATE_LIMIT_RETRIES
                    << "). Waiting " << wait_seconds << " seconds before retry\n";
-            Log::instance().write(log_msg.str());
+            mclog(log_msg.str());
 
             std::this_thread::sleep_for(std::chrono::seconds(wait_seconds));
             continue;
@@ -272,7 +272,7 @@ json OpenAIClient::call_openai(const std::string& user_message, const json& tool
             std::string error_detail = res->body.length() > 500 ? res->body.substr(0, 500) + "..." : res->body;
             std::ostringstream log_msg;
             log_msg << "Client error " << status << ": " << error_detail << "\n";
-            Log::instance().write(log_msg.str());
+            mclog(log_msg.str());
 
             std::ostringstream exception_msg;
             switch (status) {
@@ -301,7 +301,7 @@ json OpenAIClient::call_openai(const std::string& user_message, const json& tool
                 std::string error_detail = res->body.length() > 500 ? res->body.substr(0, 500) + "..." : res->body;
                 std::ostringstream err;
                 err << "Exceeded maximum server error retries (" << MAX_SERVER_ERROR_RETRIES << ")\n";
-                Log::instance().write(err.str());
+                mclog(err.str());
 
                 std::ostringstream exception_msg;
                 exception_msg << "Server error (" << status << ") after "
@@ -320,7 +320,7 @@ json OpenAIClient::call_openai(const std::string& user_message, const json& tool
                 catch (const std::exception& e) {
                     std::ostringstream err;
                     err << "Failed to parse retry-after header: " << e.what() << "\n";
-                    Log::instance().write(err.str());
+                    mclog(err.str());
                     wait_seconds = 0;
                 }
             }
@@ -344,7 +344,7 @@ json OpenAIClient::call_openai(const std::string& user_message, const json& tool
             log_msg << error_msg << " (" << status << ") - attempt "
                    << server_error_retries << "/" << MAX_SERVER_ERROR_RETRIES
                    << ". Retrying in " << wait_seconds << " seconds\n";
-            Log::instance().write(log_msg.str());
+            mclog(log_msg.str());
 
             std::this_thread::sleep_for(std::chrono::seconds(wait_seconds));
             continue;
@@ -352,7 +352,7 @@ json OpenAIClient::call_openai(const std::string& user_message, const json& tool
 
         // Unknown status code
         std::string error_detail = res->body.length() > 500 ? res->body.substr(0, 500) + "..." : res->body;
-        Log::instance().write("Unexpected HTTP status " + std::to_string(status) + ": " + error_detail + "\n");
+        mclog("Unexpected HTTP status " + std::to_string(status) + ": " + error_detail + "\n");
         throw std::runtime_error("Unexpected HTTP status " + std::to_string(status) + ": " + error_detail);
     }
 }
@@ -373,7 +373,7 @@ std::string OpenAIClient::chat(Context& context, const std::string& user_message
         m_tools.push_back(tool);
     }
 
-    Log::instance().write("Start " + user_message + " ===\n");
+    mclog("Start " + user_message + " ===\n");
 
     // Same-line progress feedback: "Thinking..." while waiting on the API and
     // "[tool] ..." while a tool actually runs.
@@ -427,18 +427,18 @@ std::string OpenAIClient::chat(Context& context, const std::string& user_message
     // as the model replies without tool_calls.
     while (message.contains("tool_calls") && !message["tool_calls"].empty() && iteration < max_iterations) {
         iteration++;
-        Log::instance().write("=== Iteration " + std::to_string(iteration) + " ===\n");
+        mclog("=== Iteration " + std::to_string(iteration) + " ===\n");
 
         {
             std::string cot = extractReasoning(message);
             if (!cot.empty()) {
-                Log::instance().write("Assistant CoT: " + cot + "\n");
+                mclog("Assistant CoT: " + cot + "\n");
             }
         }
         {
             std::string text = extractContent(message);
             if (!text.empty()) {
-                Log::instance().write("Assistant text: " + text + "\n");
+                mclog("Assistant text: " + text + "\n");
             }
         }
 
@@ -465,7 +465,7 @@ std::string OpenAIClient::chat(Context& context, const std::string& user_message
                 result = "ERROR: Tool call arguments are not valid JSON: " + std::string(e.what()) +
                         "\nReceived arguments: " + raw_args +
                         "\nPlease retry this tool call with a valid JSON object as the arguments.";
-                Log::instance().write("Tool argument parse failure for '" + tool_name + "': " + e.what() + "\n");
+                mclog("Tool argument parse failure for '" + tool_name + "': " + e.what() + "\n");
             }
 
             if (!args_parsed) {
@@ -478,8 +478,8 @@ std::string OpenAIClient::chat(Context& context, const std::string& user_message
             }
 
             set_status("[tool] " + getToolDisplayName(tool_name, tool_input));
-            Log::instance().write("Executing tool: " + tool_name + "\n");
-            Log::instance().write("Input: " + tool_input.dump(2) + "\n");
+            mclog("Executing tool: " + tool_name + "\n");
+            mclog("Input: " + tool_input.dump(2) + "\n");
 
             auto it = m_tool_registry.find(tool_name);
             if (it != m_tool_registry.end()) {
@@ -488,12 +488,12 @@ std::string OpenAIClient::chat(Context& context, const std::string& user_message
                 }
                 catch (const std::exception& e) {
                     result = "ERROR: Tool execution failed: " + std::string(e.what());
-                    Log::instance().write("Tool execution exception: " + std::string(e.what()) + "\n");
+                    mclog("Tool execution exception: " + std::string(e.what()) + "\n");
                 }
             }
             else {
                 result = formatUnknownToolError(tool_name, m_tool_registry);
-                Log::instance().write("Unknown tool requested: " + tool_name + "\n");
+                mclog("Unknown tool requested: " + tool_name + "\n");
             }
 
             m_conversation_history.push_back({
@@ -515,10 +515,22 @@ std::string OpenAIClient::chat(Context& context, const std::string& user_message
     }
 
     if (iteration >= max_iterations) {
-        Log::instance().write("Warning: Reached maximum iterations\n");
+        mclog("Warning: Reached maximum iterations\n");
     }
 
-    Log::instance().write("=== Final Response === " + choice.value("finish_reason", "unknown") + "\n");
+    // If we stopped with unanswered tool calls (iteration cap), answer them so
+    // the conversation stays valid on the next turn.
+    if (message.contains("tool_calls") && !message["tool_calls"].empty()) {
+        for (const auto& tc : message["tool_calls"]) {
+            m_conversation_history.push_back({
+                {"role", "tool"},
+                {"tool_call_id", tc.value("id", std::string())},
+                {"content", "Tool not run: iteration limit reached."}
+            });
+        }
+    }
+
+    mclog("=== Final Response === " + choice.value("finish_reason", "unknown") + "\n");
 
     // Clear the progress line and restore the cursor before the reply prints.
     if (printed_status) std::cout << "\r\x1b[K\x1b[?25h" << std::flush;
@@ -529,13 +541,16 @@ std::string OpenAIClient::chat(Context& context, const std::string& user_message
     if (reply.empty()) {
         reply = extractReasoning(message);
     }
+    if (choice.value("finish_reason", std::string()) == "length") {
+        reply += "\n[truncated: hit max output tokens - raise max-output-tokens]";
+    }
     return reply;
 }
 
 /// <summary>Starts a new conversation by clearing the conversation history.</summary>
 void OpenAIClient::start() {
     m_conversation_history = json::array();
-    Log::instance().write("Started new conversation (history cleared)\n");
+    mclog("Started new conversation (history cleared)\n");
 }
 
 /// <summary>Checks if conversation history exists.</summary>
@@ -546,12 +561,12 @@ bool OpenAIClient::hasHistory() const {
 /// <summary>Loads conversation history from stored format.</summary>
 void OpenAIClient::loadHistory(const json& history) {
     if (!history.is_array()) {
-        Log::instance().write("ERROR: Invalid history format - expected array\n");
+        mclog("ERROR: Invalid history format - expected array\n");
         return;
     }
 
     m_conversation_history = history;
-    Log::instance().write("Loaded conversation history with " + std::to_string(history.size()) + " messages\n");
+    mclog("Loaded conversation history with " + std::to_string(history.size()) + " messages\n");
 }
 
 /// <summary>Gets the current conversation history.</summary>
@@ -562,18 +577,18 @@ json OpenAIClient::getHistory() const {
 /// <summary>Sets the model for OpenAI client.</summary>
 void OpenAIClient::setModel(const std::string& model) {
     m_model = model;
-    Log::instance().write("OpenAIClient model updated to: " + model + "\n");
+    mclog("OpenAIClient model updated to: " + model + "\n");
 }
 
 /// <summary>Sets the host URL for OpenAI client and resets the API client.</summary>
 void OpenAIClient::setHost(const std::string& host) {
     m_url = host;
     m_api_client.reset();  // Reset client to force re-initialization with new URL
-    Log::instance().write("OpenAIClient host updated to: " + host + " (API client reset)\n");
+    mclog("OpenAIClient host updated to: " + host + " (API client reset)\n");
 }
 
 /// <summary>Sets the API key for OpenAI client.</summary>
 void OpenAIClient::setApiKeyRef(const std::string& apiKey) {
     m_apiKeyRef = apiKey;
-    Log::instance().write("OpenAIClient API key updated\n");
+    mclog("OpenAIClient API key updated\n");
 }
