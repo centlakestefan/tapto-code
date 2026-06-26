@@ -15,8 +15,6 @@
 // model may call, plus a small typed key/value bag shared with the tools so a
 // tool can stash state for later turns.
 //
-// This replaces the original project's database-backed Context; tenant ids,
-// audit logging, and abort/pause signalling have all been removed.
 class Context {
 public:
     std::vector<ToolSpec> tools;

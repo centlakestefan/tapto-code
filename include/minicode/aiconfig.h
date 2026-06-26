@@ -3,10 +3,7 @@
 
 #pragma once
 
-// Lightweight settings object for the AI backends. Replaces the original
-// project's much larger Config; only the knobs the clients actually read are
-// kept here, with sane defaults. Wire these to the mini-code config store when
-// the clients are integrated into the CLI.
+// Lightweight settings object for the AI backends. 
 class AiConfig {
 public:
     int maxOutputTokens() const { return m_maxOutputTokens; }
