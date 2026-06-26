@@ -205,19 +205,30 @@ int cmd_unset(const Args& a) {
     return 0;
 }
 
+// Mask a secret for display: keep a short prefix and last 4 chars so the entry
+// is identifiable without revealing the value. `config get` still shows it in full.
+std::string mask_secret(const std::string& v) {
+    if (v.size() <= 12) return "****";
+    return v.substr(0, 6) + "..." + v.substr(v.size() - 4);
+}
+
+std::string list_value(const std::string& key, const std::string& value) {
+    return key == "api-key" ? mask_secret(value) : value;
+}
+
 int cmd_list(const Args& a) {
     if (a.level) {
         Config cfg = Config::load(config_path(*a.level));
         for (const auto& entry : cfg.entries()) {
             if (a.show_origin) std::cout << level_name(*a.level) << "\t";
-            std::cout << entry.first << "=" << entry.second << "\n";
+            std::cout << entry.first << "=" << list_value(entry.first, entry.second) << "\n";
         }
         return 0;
     }
 
     for (const auto& entry : effective_config()) {
         if (a.show_origin) std::cout << level_name(entry.origin) << "\t";
-        std::cout << entry.key << "=" << entry.value << "\n";
+        std::cout << entry.key << "=" << list_value(entry.key, entry.value) << "\n";
     }
     return 0;
 }

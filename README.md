@@ -99,7 +99,8 @@ environment variable first — `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` /
 `GEMINI_API_KEY` — and only falls back to the `api-key` config value if the
 variable isn't set. Writing the key to config (via `config set api-key` or the
 first-run prompt) prints a one-time plaintext-storage warning; using it
-afterward is silent.
+afterward is silent. `config list` masks the key (e.g. `sk_ant...cdef`); use
+`config get api-key` for the full value.
 
 **Diagnostic logging:** off by default. Set `trace-file` to a path
 (`mini-code config set trace-file ./minicode.log`) to append request/response
