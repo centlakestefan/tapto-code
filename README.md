@@ -125,6 +125,28 @@ like `--config Debug` are part of the command, not parsed by mini-code). In a
 chat the agent discovers them via `list_commands` and runs them via
 `run_command` — it can never supply arbitrary shell text, only pick a name.
 
+### Command arguments
+
+A command template may contain positional placeholders `%1`, `%2`, … and `%*`
+(all remaining values). The agent fills them via `run_command`'s `args`:
+
+```sh
+mini-code command add commit git commit -m %1
+# agent calls run_command{ name: "commit", args: ["fix: handle empty input"] }
+```
+
+Quoting is a non-issue by design: a command **with** placeholders bypasses the
+shell entirely and is executed as a literal argv vector, so an argument value
+can contain spaces, quotes, `&`, `|`, `%`, etc. and is passed through verbatim —
+nothing is re-interpreted by a shell. (A command **without** placeholders still
+runs through the shell, so it can use pipes and redirection.)
+
+Because values are literal arguments, the model cannot inject extra commands.
+Put placeholders only at *data* positions, not where they could become a flag
+or subcommand (`git commit -m %1` is fine; `git %1` lets the model choose the
+subcommand). Use `--` before a placeholder if a value might start with `-`
+(e.g. `rm -- %1`).
+
 ## Other commands
 
 ```sh

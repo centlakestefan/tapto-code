@@ -92,9 +92,14 @@ inline std::string getToolDisplayName(const std::string& tool_name, const nlohma
             label += " " + input["filename"].get<std::string>();
         }
         // run_command takes its target as "name" (and there is no "command" key
-        // to collide with on that tool).
+        // to collide with on that tool), plus optional positional "args".
         if (!input.contains("command") && input.contains("name") && input["name"].is_string()) {
             label += " " + input["name"].get<std::string>();
+        }
+        if (input.contains("args") && input["args"].is_array()) {
+            for (const auto& a : input["args"]) {
+                if (a.is_string()) label += " " + a.get<std::string>();
+            }
         }
         if (input.contains("search_string") && input["search_string"].is_string()) {
             const std::string& q = input["search_string"].get_ref<const std::string&>();

@@ -12,8 +12,13 @@
 #include <string>
 #include <vector>
 
-#ifndef _WIN32
-#include <sys/wait.h>
+#ifdef _WIN32
+#  define WIN32_LEAN_AND_MEAN
+#  define NOMINMAX
+#  include <windows.h>
+#else
+#  include <unistd.h>
+#  include <sys/wait.h>
 #endif
 
 #include <nlohmann/json.hpp>
@@ -421,6 +426,182 @@ std::string run_shell(const std::string& cmdline, int& exit_code) {
     return out;
 }
 
+// Split a (trusted, author-written) command template into tokens, honoring
+// simple double-quote grouping so a token may contain spaces.
+std::vector<std::string> tokenize_template(const std::string& s) {
+    std::vector<std::string> toks;
+    std::string cur;
+    bool in_quotes = false, have = false;
+    for (char c : s) {
+        if (c == '"') { in_quotes = !in_quotes; have = true; }
+        else if (!in_quotes && (c == ' ' || c == '\t')) {
+            if (have) { toks.push_back(cur); cur.clear(); have = false; }
+        } else { cur.push_back(c); have = true; }
+    }
+    if (have) toks.push_back(cur);
+    return toks;
+}
+
+bool template_has_placeholder(const std::string& tpl) {
+    for (size_t i = 0; i + 1 < tpl.size(); ++i) {
+        if (tpl[i] == '%' && (tpl[i + 1] == '*' || (tpl[i + 1] >= '1' && tpl[i + 1] <= '9'))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Expand a template into an argv vector. The template's whitespace defines the
+// argv boundaries; %1..%9 and %* are replaced with model-supplied values as
+// *literal* argv elements (never re-split), so no shell quoting is involved.
+bool build_argv(const std::string& tpl, const std::vector<std::string>& args,
+                std::vector<std::string>& argv, std::string& error) {
+    // Highest positional placeholder used; %* expands to the args beyond it.
+    int max_idx = 0;
+    for (size_t i = 0; i + 1 < tpl.size(); ++i) {
+        if (tpl[i] == '%' && tpl[i + 1] >= '1' && tpl[i + 1] <= '9') {
+            max_idx = std::max(max_idx, tpl[i + 1] - '0');
+        }
+    }
+
+    for (const std::string& tok : tokenize_template(tpl)) {
+        if (tok == "%*") {
+            for (size_t i = static_cast<size_t>(max_idx); i < args.size(); ++i) argv.push_back(args[i]);
+            continue;
+        }
+        std::string out;
+        for (size_t i = 0; i < tok.size(); ++i) {
+            if (tok[i] == '%' && i + 1 < tok.size() && tok[i + 1] >= '1' && tok[i + 1] <= '9') {
+                size_t idx = static_cast<size_t>(tok[i + 1] - '0');
+                if (idx > args.size()) {
+                    error = "ERROR: command needs argument %" + std::to_string(idx) +
+                            " but only " + std::to_string(args.size()) + " were provided.";
+                    return false;
+                }
+                out += args[idx - 1];
+                ++i; // skip the digit
+            } else {
+                out.push_back(tok[i]);
+            }
+        }
+        argv.push_back(out);
+    }
+    if (argv.empty()) { error = "ERROR: empty command"; return false; }
+    return true;
+}
+
+std::string join_argv(const std::vector<std::string>& argv) {
+    std::string s;
+    for (size_t i = 0; i < argv.size(); ++i) { if (i) s += ' '; s += argv[i]; }
+    return s;
+}
+
+#ifdef _WIN32
+std::wstring utf8_to_wide(const std::string& s) {
+    if (s.empty()) return std::wstring();
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), nullptr, 0);
+    std::wstring w(static_cast<size_t>(n), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), w.data(), n);
+    return w;
+}
+
+// Quote one argument per the CommandLineToArgvW rules so the child receives it
+// as a single, literal argv element.
+std::string win_quote_arg(const std::string& a) {
+    if (!a.empty() && a.find_first_of(" \t\n\v\"") == std::string::npos) return a;
+    std::string out = "\"";
+    for (size_t i = 0;; ++i) {
+        size_t bs = 0;
+        while (i < a.size() && a[i] == '\\') { ++bs; ++i; }
+        if (i == a.size()) { out.append(bs * 2, '\\'); break; }
+        if (a[i] == '"') { out.append(bs * 2 + 1, '\\'); out.push_back('"'); }
+        else { out.append(bs, '\\'); out.push_back(a[i]); }
+    }
+    out.push_back('"');
+    return out;
+}
+
+// Run argv directly (no shell) and capture stdout+stderr.
+std::string exec_capture(const std::vector<std::string>& argv, int& exit_code) {
+    std::string cmdline;
+    for (size_t i = 0; i < argv.size(); ++i) { if (i) cmdline += ' '; cmdline += win_quote_arg(argv[i]); }
+
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+    HANDLE rd = nullptr, wr = nullptr;
+    if (!CreatePipe(&rd, &wr, &sa, 0)) { exit_code = -1; return "ERROR: CreatePipe failed"; }
+    SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    si.hStdOutput = wr;
+    si.hStdError = wr;
+    PROCESS_INFORMATION pi{};
+
+    std::wstring wcmd = utf8_to_wide(cmdline);
+    std::vector<wchar_t> buf(wcmd.begin(), wcmd.end());
+    buf.push_back(L'\0');
+
+    BOOL ok = CreateProcessW(nullptr, buf.data(), nullptr, nullptr, TRUE,
+                             CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+    CloseHandle(wr);
+    if (!ok) {
+        CloseHandle(rd);
+        exit_code = -1;
+        return "ERROR: failed to start '" + argv[0] + "' (CreateProcess error " +
+               std::to_string(GetLastError()) + ")";
+    }
+
+    std::string out;
+    char chunk[4096];
+    DWORD n = 0;
+    while (ReadFile(rd, chunk, sizeof(chunk), &n, nullptr) && n > 0) out.append(chunk, n);
+    CloseHandle(rd);
+
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = 0;
+    GetExitCodeProcess(pi.hProcess, &code);
+    exit_code = static_cast<int>(code);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    return out;
+}
+#else
+// Run argv directly (no shell) and capture stdout+stderr.
+std::string exec_capture(const std::vector<std::string>& argv, int& exit_code) {
+    int fds[2];
+    if (pipe(fds) != 0) { exit_code = -1; return "ERROR: pipe failed"; }
+    pid_t pid = fork();
+    if (pid < 0) { close(fds[0]); close(fds[1]); exit_code = -1; return "ERROR: fork failed"; }
+    if (pid == 0) {
+        dup2(fds[1], STDOUT_FILENO);
+        dup2(fds[1], STDERR_FILENO);
+        close(fds[0]);
+        close(fds[1]);
+        std::vector<char*> c;
+        for (const auto& s : argv) c.push_back(const_cast<char*>(s.c_str()));
+        c.push_back(nullptr);
+        execvp(c[0], c.data());
+        std::string e = "ERROR: failed to exec '" + argv[0] + "'\n";
+        (void)!write(STDOUT_FILENO, e.data(), e.size());
+        _exit(127);
+    }
+    close(fds[1]);
+    std::string out;
+    char chunk[4096];
+    ssize_t n;
+    while ((n = read(fds[0], chunk, sizeof(chunk))) > 0) out.append(chunk, static_cast<size_t>(n));
+    close(fds[0]);
+    int status = 0;
+    waitpid(pid, &status, 0);
+    exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    return out;
+}
+#endif
+
 std::string execute_list_commands(Context& /*context*/, const json& /*in*/) {
     auto cmds = merged_commands();
     if (cmds.empty()) {
@@ -449,16 +630,38 @@ std::string execute_run_command(Context& /*context*/, const json& in) {
             for (const auto& [n, c] : cmds) msg += " " + n;
             return msg;
         }
+        const std::string& tpl = it->second;
+
+        std::vector<std::string> args;
+        if (in.contains("args")) {
+            if (!in["args"].is_array()) return "ERROR: 'args' must be an array of strings.";
+            for (const auto& a : in["args"]) {
+                args.push_back(a.is_string() ? a.get<std::string>() : a.dump());
+            }
+        }
 
         int exit_code = 0;
-        std::string output = run_shell(it->second, exit_code);
+        std::string output;
+        std::string display;
+        if (template_has_placeholder(tpl)) {
+            // Parameterized: expand to argv and exec directly — no shell, so the
+            // model-supplied values are passed literally (no quoting needed).
+            std::vector<std::string> argv;
+            std::string err;
+            if (!build_argv(tpl, args, argv, err)) return err;
+            display = join_argv(argv);
+            output = exec_capture(argv, exit_code);
+        } else {
+            // No placeholders: run through the shell (allows pipes/redirection).
+            display = tpl;
+            output = run_shell(tpl, exit_code);
+        }
 
         constexpr size_t kMaxBytes = 16000;
-        bool truncated = output.size() > kMaxBytes;
-        if (truncated) output = output.substr(0, kMaxBytes) + "\n... [output truncated]";
+        if (output.size() > kMaxBytes) output = output.substr(0, kMaxBytes) + "\n... [output truncated]";
 
         std::ostringstream r;
-        r << "$ " << it->second << "\n" << output;
+        r << "$ " << display << "\n" << output;
         if (!output.empty() && output.back() != '\n') r << "\n";
         r << "[exit code: " << exit_code << "]";
         return r.str();
@@ -543,11 +746,18 @@ std::vector<ToolSpec> builtin_tools() {
         "Run one of the project's pre-approved commands by name. Arbitrary shell "
         "commands are NOT allowed; only commands configured via "
         "'mini-code command add' can be run. Call list_commands first to see what "
-        "is available. Returns the command's combined output and exit code.";
+        "is available, including any %1, %2, ... placeholders a command takes. "
+        "Provide values for those placeholders via 'args' (in order; %* receives "
+        "all remaining values). Returns the command's combined output and exit code.";
     run.parameters = {
         {"type", "object"},
         {"properties", {
             {"name", {{"type", "string"}, {"description", "Name of the configured command to run."}}},
+            {"args", {
+                {"type", "array"},
+                {"items", {{"type", "string"}}},
+                {"description", "Values for the command's %1, %2, ... placeholders, in order."}
+            }},
         }},
         {"required", {"name"}},
     };
