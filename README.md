@@ -69,6 +69,10 @@ configured AI provider (chat is the default action).
 It prints a `>` prompt, reads a line, sends it to the provider, prints the
 reply, and repeats. Type `/exit` (or Ctrl-D) to quit.
 
+In-session slash commands: `/clear` (reset the conversation — useful to recover
+after filling the model's context window), `/list-commands`, and
+`/add-command <name> <command...>`.
+
 **First run:** if no provider/api-key is configured, mini-code prompts for them
 interactively and saves them to the global (`~/.minicode`) config, then starts
 the chat. You can also set them manually instead:

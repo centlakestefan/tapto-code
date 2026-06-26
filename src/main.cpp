@@ -471,7 +471,7 @@ int cmd_chat() {
     for (size_t i = 0; i < context.tools.size(); ++i) {
         std::cout << (i ? ", " : "") << context.tools[i].name;
     }
-    std::cout << "\nSlash commands: /list-commands, /add-command <name> <command...>, /exit\n";
+    std::cout << "\nSlash commands: /clear, /list-commands, /add-command <name> <command...>, /exit\n";
 
     std::string line;
     while (true) {
@@ -482,6 +482,13 @@ int cmd_chat() {
         }
         if (line == "/exit" || line == "/quit") break;
         if (line.empty()) continue;
+
+        // Reset the conversation (e.g. to recover after filling the context window).
+        if (line == "/clear") {
+            client->start();
+            std::cout << "(conversation cleared)\n";
+            continue;
+        }
 
         // In-session command management. Newly added commands are immediately
         // runnable by the agent (run_command reads the store on each call).
