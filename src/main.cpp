@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Centlake Software AB
 
-#include "minicode/commands.h"
-#include "minicode/config.h"
-#include "minicode/paths.h"
-#include "minicode/tools.h"
+#include "tapto/commands.h"
+#include "tapto/config.h"
+#include "tapto/paths.h"
+#include "tapto/tools.h"
 
-#include "minicode/claude.h"
-#include "minicode/openai.h"
-#include "minicode/gemini.h"
-#include "minicode/aiconfig.h"
-#include "minicode/log.h"
+#include "tapto/claude.h"
+#include "tapto/openai.h"
+#include "tapto/gemini.h"
+#include "tapto/aiconfig.h"
+#include "tapto/log.h"
 
 #include <nlohmann/json.hpp>
 
@@ -22,10 +22,10 @@
 #include <string>
 #include <vector>
 
-using namespace minicode;
+using namespace tapto;
 
-#ifndef MINICODE_VERSION
-#define MINICODE_VERSION "0.0.0-dev"
+#ifndef TAPTO_VERSION
+#define TAPTO_VERSION "0.0.0-dev"
 #endif
 
 namespace {
@@ -47,12 +47,12 @@ void enable_console_features() {
 }
 
 const char* kUsage =
-    "mini-code - a small cross-platform CLI\n"
+    "tapto-code - a small cross-platform CLI\n"
     "\n"
     "Usage:\n"
-    "  mini-code                                    Start an interactive chat (default)\n"
-    "  mini-code [--system|--global|--local] config <command> [args]\n"
-    "  mini-code [--system|--global|--local] command <add|remove|list> ...\n"
+    "  tapto-code                                    Start an interactive chat (default)\n"
+    "  tapto-code [--system|--global|--local] config <command> [args]\n"
+    "  tapto-code [--system|--global|--local] command <add|remove|list> ...\n"
     "\n"
     "Config commands:\n"
     "  set <key> <value>   Set a config value (default scope: local)\n"
@@ -73,8 +73,8 @@ const char* kUsage =
     "\n"
     "Scope flags:\n"
     "  --system   machine-wide config\n"
-    "  --global   current user's config (~/.minicode)\n"
-    "  --local    per-folder config (./.minicode); the default for writes\n"
+    "  --global   current user's config (~/.tapto)\n"
+    "  --local    per-folder config (./.tapto); the default for writes\n"
     "\n"
     "Options:\n"
     "  --show-origin   with 'list', prefix each entry with its scope\n"
@@ -121,7 +121,7 @@ std::vector<EffectiveEntry> effective_config() {
     return merged;
 }
 
-// Config keys mini-code understands; `config set` rejects anything else.
+// Config keys tapto-code understands; `config set` rejects anything else.
 bool is_supported_config_key(const std::string& key) {
     static const char* kKeys[] = {
         "provider-type", "api-key", "provider-url", "model",
@@ -238,8 +238,8 @@ int cmd_list(const Args& a) {
 
 int cmd_version() {
     nlohmann::json info;
-    info["name"] = "mini-code";
-    info["version"] = MINICODE_VERSION;
+    info["name"] = "tapto-code";
+    info["version"] = TAPTO_VERSION;
     std::cout << info.dump(2) << "\n";
     return 0;
 }
@@ -249,7 +249,7 @@ int cmd_version() {
 // line containing tokens like --build or --config.
 int cmd_command(std::optional<Level> level, const std::vector<std::string>& rest) {
     if (rest.empty()) {
-        std::cerr << "usage: mini-code [--scope] command <add|remove|list> ...\n";
+        std::cerr << "usage: tapto-code [--scope] command <add|remove|list> ...\n";
         return 2;
     }
     const std::string& sub = rest[0];
@@ -372,7 +372,7 @@ const char* kDefaultSystemPrompt =
 
 // The effective system prompt: whatever is configured, else the built-in
 // default used in-memory. Chat never persists anything — persisting the default
-// is the job of `mini-code install`.
+// is the job of `tapto-code install`.
 std::string resolve_system_prompt() {
     return get_effective("system-prompt").value_or(kDefaultSystemPrompt);
 }
@@ -403,7 +403,7 @@ bool set_global(const std::string& key, const std::string& value) {
 // for provider-type and api-key and store them in the global config. Returns
 // false if the user aborts (EOF) or gives invalid input.
 bool first_run_setup() {
-    std::cout << "Welcome to mini-code. Let's set up your AI provider.\n";
+    std::cout << "Welcome to tapto-code. Let's set up your AI provider.\n";
 
     if (!get_effective("provider-type")) {
         std::cout << "Provider (claude / openai / gemini): " << std::flush;
@@ -498,7 +498,7 @@ int cmd_chat() {
     Context context;
     context.tools = builtin_tools();
 
-    std::cout << "mini-code chat - provider: " << *provider << ", model: " << model << "\n"
+    std::cout << "tapto-code chat - provider: " << *provider << ", model: " << model << "\n"
               << "Tools: ";
     for (size_t i = 0; i < context.tools.size(); ++i) {
         std::cout << (i ? ", " : "") << context.tools[i].name;

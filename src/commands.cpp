@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Centlake Software AB
 
-#include "minicode/commands.h"
+#include "tapto/commands.h"
 
-#include "minicode/config.h"
+#include "tapto/config.h"
 
-namespace minicode {
+namespace tapto {
 
 std::map<std::string, std::string> merged_commands() {
     std::map<std::string, std::string> out;
@@ -65,4 +65,4 @@ bool remove_command(Level level, const std::string& name) {
     return true;
 }
 
-} // namespace minicode
+} // namespace tapto

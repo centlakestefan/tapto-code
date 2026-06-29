@@ -35,4 +35,4 @@ jobs:
 
       - name: Smoke test (Linux)
         if: runner.os == 'Linux'
-        run: ./build/mini-code version
+        run: ./build/tapto-code version

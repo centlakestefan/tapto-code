@@ -9,7 +9,7 @@
 #include <utility>
 #include <vector>
 
-namespace minicode {
+namespace tapto {
 
 // In-memory view of a single config file. Entries keep insertion order so
 // listing and rewriting stay stable.
@@ -37,4 +37,4 @@ private:
     std::vector<Entry> entries_;
 };
 
-} // namespace minicode
+} // namespace tapto

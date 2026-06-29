@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Centlake Software AB
 
-#include "minicode/paths.h"
+#include "tapto/paths.h"
 
 #include <cstdlib>
 #include <system_error>
 
 namespace fs = std::filesystem;
 
-namespace minicode {
+namespace tapto {
 
 namespace {
 
@@ -28,9 +28,9 @@ fs::path system_store_path(const std::string& filename) {
 #ifdef _WIN32
     fs::path base = env_path("PROGRAMDATA");
     if (base.empty()) base = "C:\\ProgramData";
-    return base / "minicode" / filename;
+    return base / "tapto" / filename;
 #else
-    return fs::path("/etc/minicode") / filename;
+    return fs::path("/etc/tapto") / filename;
 #endif
 }
 
@@ -45,7 +45,7 @@ fs::path home_dir() {
 }
 
 fs::path global_store_path(const std::string& filename) {
-    return home_dir() / ".minicode" / filename;
+    return home_dir() / ".tapto" / filename;
 }
 
 // Encode an absolute directory path into a single filename-safe key.
@@ -70,7 +70,7 @@ fs::path local_path(const std::string& filename) {
     if (ec) cwd = ".";
     fs::path canon = fs::weakly_canonical(cwd, ec);
     if (ec) canon = cwd;
-    return home_dir() / ".minicode" / "projects" / project_key(canon) / filename;
+    return home_dir() / ".tapto" / "projects" / project_key(canon) / filename;
 }
 
 // Resolve the path to a named store file ("config", "commands", ...) for a scope.
@@ -102,4 +102,4 @@ fs::path commands_path(Level level) {
     return store_path(level, "commands");
 }
 
-} // namespace minicode
+} // namespace tapto

@@ -7,9 +7,9 @@
 #include <string>
 #include <vector>
 
-#include "minicode/paths.h"
+#include "tapto/paths.h"
 
-namespace minicode {
+namespace tapto {
 
 // A user-defined, allow-listed command: a short name mapped to a command line,
 // plus the scope it came from.
@@ -35,4 +35,4 @@ void add_command(Level level, const std::string& name, const std::string& comman
 // Remove a command from the given scope; returns true if it existed.
 bool remove_command(Level level, const std::string& name);
 
-} // namespace minicode
+} // namespace tapto

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Centlake Software AB
 
-#include "minicode/openai.h"
+#include "tapto/openai.h"
 
 #include <algorithm>
 #include <chrono>
@@ -12,7 +12,7 @@
 #include <string>
 #include <thread>
 
-#include "minicode/log.h"
+#include "tapto/log.h"
 
 using json = nlohmann::json;
 

@@ -1,7 +1,7 @@
 # Starter commands
 
 [`commands`](commands) is a curated, security-conscious set of common
-development commands for mini-code's `run_command` tool, so you don't have to
+development commands for tapto-code's `run_command` tool, so you don't have to
 build your allow-list from scratch.
 
 ## Design
@@ -31,25 +31,25 @@ every project.
 
 ```sh
 # Linux / macOS
-mkdir -p ~/.minicode && cp commands ~/.minicode/commands
+mkdir -p ~/.tapto && cp commands ~/.tapto/commands
 
 # Windows (PowerShell)
-New-Item -ItemType Directory -Force "$env:USERPROFILE\.minicode" | Out-Null
-Copy-Item commands "$env:USERPROFILE\.minicode\commands"
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.tapto" | Out-Null
+Copy-Item commands "$env:USERPROFILE\.tapto\commands"
 ```
 
 **Already have commands** — don't overwrite; append the lines you want, or add
 them individually (this never clobbers existing entries):
 
 ```sh
-mini-code --global command add npm-build npm run build
-mini-code --global command add git-status git status
+tapto-code --global command add npm-build npm run build
+tapto-code --global command add git-status git status
 ```
 
 Then check what's active:
 
 ```sh
-mini-code command list
+tapto-code command list
 ```
 
 ## Customize

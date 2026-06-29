@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(mini-code VERSION 0.1.0 LANGUAGES CXX)
+project(tapto-code VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -36,7 +36,7 @@ FetchContent_Declare(httplib
 FetchContent_MakeAvailable(nlohmann_json httplib)
 
 # --- Target -----------------------------------------------------------------
-add_executable(mini-code
+add_executable(tapto-code
   src/main.cpp
   src/config.cpp
   src/commands.cpp
@@ -46,12 +46,12 @@ add_executable(mini-code
   src/openai.cpp
   src/gemini.cpp
 )
-target_include_directories(mini-code PRIVATE include)
-target_compile_definitions(mini-code PRIVATE
-  MINICODE_VERSION="${PROJECT_VERSION}"
+target_include_directories(tapto-code PRIVATE include)
+target_compile_definitions(tapto-code PRIVATE
+  TAPTO_VERSION="${PROJECT_VERSION}"
   CPPHTTPLIB_OPENSSL_SUPPORT
 )
-target_link_libraries(mini-code PRIVATE
+target_link_libraries(tapto-code PRIVATE
   nlohmann_json::nlohmann_json
   httplib::httplib
   OpenSSL::SSL
@@ -59,9 +59,9 @@ target_link_libraries(mini-code PRIVATE
 )
 
 if(MSVC)
-  target_compile_options(mini-code PRIVATE /W4 /EHsc /utf-8)
+  target_compile_options(tapto-code PRIVATE /W4 /EHsc /utf-8)
 else()
-  target_compile_options(mini-code PRIVATE -Wall -Wextra)
+  target_compile_options(tapto-code PRIVATE -Wall -Wextra)
 endif()
 
-install(TARGETS mini-code RUNTIME DESTINATION bin)
+install(TARGETS tapto-code RUNTIME DESTINATION bin)

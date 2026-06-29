@@ -5,7 +5,7 @@
 
 #include <filesystem>
 
-namespace minicode {
+namespace tapto {
 
 // Config scopes, ordered lowest to highest precedence.
 enum class Level { System, Global, Local };
@@ -17,13 +17,13 @@ const char* level_name(Level level);
 //
 // System and Global are fixed per-machine / per-user. Local (project) scope is
 // stored centrally per working directory under the user's home
-// (~/.minicode/projects/<encoded-cwd>/config), NOT inside the project folder —
+// (~/.tapto/projects/<encoded-cwd>/config), NOT inside the project folder —
 // so a cloned repo can't ship config/commands and nothing is written into the
 // project tree. No upward search.
 std::filesystem::path config_path(Level level);
 
 // Same resolution as config_path, but for the allow-listed commands store
-// (".minicode/commands").
+// (".tapto/commands").
 std::filesystem::path commands_path(Level level);
 
-} // namespace minicode
+} // namespace tapto

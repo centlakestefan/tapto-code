@@ -16,10 +16,14 @@
 #include "context.h"
 #include "aiconfig.h"
 
-class OpenAIClient : public AiBackend {
+class ClaudeClient : public AiBackend {
 private:
     // Type alias for the client's internal tool executor (context already bound)
     using ToolExecutor = std::function<std::string(const nlohmann::json&)>;
+
+    // API timeout constants (in seconds)
+    static constexpr int CONNECTION_TIMEOUT_SECONDS = 30;
+    static constexpr int READ_TIMEOUT_SECONDS = 300;
 
     // Retry limit constants
     static constexpr int MAX_CONNECTION_RETRIES = 5;
@@ -39,7 +43,7 @@ private:
     std::string         m_model;
     std::string         m_apiKeyRef;
     std::string         m_systemPrompt;
-    std::optional<int>  m_thinkingBudget;  // nullopt = server default; 0 = off; >0 = on (budget ignored, just a toggle)
+    std::optional<int>  m_thinkingBudget;  // nullopt = server default; 0 = off; >0 = on with budget
 
     // Persistent client for connection reuse (can be SSL or non-SSL)
     std::unique_ptr<httplib::Client> m_api_client;
@@ -47,7 +51,7 @@ private:
     // Tool registry: maps tool name to executor function
     std::map<std::string, ToolExecutor> m_tool_registry;
 
-    // Tool definitions for OpenAI API
+    // Tool definitions for Claude API
     std::vector<ToolSpec> m_tools;
 
     // Persistent conversation history for context across multiple process() calls
@@ -55,12 +59,12 @@ private:
 
     void init_api_client();
 
-    // Resolves the OpenAI API key. Stubbed to read the environment variable
-    // named by m_apiKeyRef until wired to the mini-code config store.
+    // Resolves the Claude API key. Stubbed to read the environment variable
+    // named by m_apiKeyRef until wired to the tapto-code config store.
     std::string getApiKey();
 
 public:
-    OpenAIClient(const AiConfig* config, const std::string& host, const std::string& model, const std::string& apiKeyRef);
+    ClaudeClient(const AiConfig* config, const std::string& host, const std::string& model, const std::string& apiKeyRef);
 
     void setSystemPrompt(const std::string& systemPrompt) override { m_systemPrompt = systemPrompt; }
     const std::string& getSystemPrompt() const override { return m_systemPrompt; }
@@ -70,7 +74,7 @@ public:
     void setApiKeyRef(const std::string& apiKeyRef) override;
     void setThinkingBudget(std::optional<int> budget) override { m_thinkingBudget = budget; }
 
-    nlohmann::json call_openai(const std::string& user_message, const nlohmann::json& tools, const nlohmann::json& conversation_history = nlohmann::json::array());
+    nlohmann::json call_claude(const std::string& user_message, const nlohmann::json& tools, const nlohmann::json& conversation_history = nlohmann::json::array());
 
     std::string chat(Context& context, const std::string& user_message) override;
 

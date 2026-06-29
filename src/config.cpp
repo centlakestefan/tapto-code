@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Centlake Software AB
 
-#include "minicode/config.h"
+#include "tapto/config.h"
 
 #include <fstream>
 #include <stdexcept>
 
 namespace fs = std::filesystem;
 
-namespace minicode {
+namespace tapto {
 
 namespace {
 
@@ -92,10 +92,10 @@ void Config::save(const fs::path& path) const {
         throw std::runtime_error("cannot write config file: " + path.string());
     }
 
-    out << "# mini-code\n";
+    out << "# tapto-code\n";
     for (const auto& entry : entries_) {
         out << entry.first << " = " << entry.second << "\n";
     }
 }
 
-} // namespace minicode
+} // namespace tapto

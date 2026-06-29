@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Centlake Software AB
 
-#include "minicode/tools.h"
-#include "minicode/commands.h"
+#include "tapto/tools.h"
+#include "tapto/commands.h"
 
-#include "minicode/context.h"
+#include "tapto/context.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -29,7 +29,7 @@
 namespace fs = std::filesystem;
 using json = nlohmann::json;
 
-namespace minicode {
+namespace tapto {
 
 namespace {
 
@@ -102,12 +102,12 @@ bool wildcard_match(const std::string& pattern, const std::string& text) {
 
 bool is_noise_dir(const std::string& name) {
     return name == ".git" || name == "build" || name == "node_modules" ||
-           name == ".minicode" || name == ".vs" || name == ".vscode";
+           name == ".tapto" || name == ".vs" || name == ".vscode";
 }
 
 // --- path sandbox ---------------------------------------------------------
 
-// The directory mini-code was started in (canonicalized). All model-driven file
+// The directory tapto-code was started in (canonicalized). All model-driven file
 // access is confined to this subtree. Computed once on first use; the process
 // never changes its working directory.
 const fs::path& sandbox_root() {
@@ -137,7 +137,7 @@ bool resolve_in_sandbox(const std::string& input, fs::path& out, std::string& er
     fs::path rel = resolved.lexically_relative(root);
     if (rel.empty() || *rel.begin() == fs::path("..")) {
         error = "ERROR: '" + input + "' is outside the working directory. "
-                "mini-code can only access the folder it was started in and its "
+                "tapto-code can only access the folder it was started in and its "
                 "subdirectories.";
         return false;
     }
@@ -690,7 +690,7 @@ std::string execute_list_commands(Context& /*context*/, const json& /*in*/) {
     auto cmds = merged_commands();
     if (cmds.empty()) {
         return "No commands are configured. The user can add them with: "
-               "mini-code command add <name> <command...>";
+               "tapto-code command add <name> <command...>";
     }
     std::ostringstream out;
     out << "Available commands:\n";
@@ -829,7 +829,7 @@ std::vector<ToolSpec> builtin_tools() {
     run.description =
         "Run one of the project's pre-approved commands by name. Arbitrary shell "
         "commands are NOT allowed; only commands configured via "
-        "'mini-code command add' can be run. Call list_commands first to see what "
+        "'tapto-code command add' can be run. Call list_commands first to see what "
         "is available, including any %1, %2, ... placeholders a command takes. "
         "Provide values for those placeholders via 'args' (in order; %* receives "
         "all remaining values). A %p1-style placeholder is a path argument that "
@@ -853,4 +853,4 @@ std::vector<ToolSpec> builtin_tools() {
     return tools;
 }
 
-} // namespace minicode
+} // namespace tapto

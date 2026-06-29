@@ -1,6 +1,6 @@
-# mini-code — starter command set (security-conscious)
+# tapto-code — starter command set (security-conscious)
 #
-# Copy this to your global commands store (~/.minicode/commands) or append the
+# Copy this to your global commands store (~/.tapto/commands) or append the
 # lines you want. See contrib/README.md for details.
 #
 # Each command does ONE specific thing. Placeholders appear only at data

@@ -10,7 +10,7 @@
 
 class Context;
 
-// Abstract interface every provider client implements. mini-code is a chat
+// Abstract interface every provider client implements. tapto-code is a chat
 // client: chat() sends one user message and returns the model's text reply,
 // running any tools the model calls along the way and retaining conversation
 // history across calls for multi-turn dialogue.

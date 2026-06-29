@@ -1,6 +1,6 @@
-# mini-code
+# tapto-code
 
-[![CI](https://github.com/centlakestefan/mini-code/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/centlakestefan/mini-code/actions/workflows/ci.yml)
+[![CI](https://github.com/centlakestefan/tapto-code/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/centlakestefan/tapto-code/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-blue.svg)
 
@@ -36,8 +36,8 @@ cmake -S . -B build
 cmake --build build --config Release
 ```
 
-The binary is produced at `build/mini-code` (Linux) or
-`build/Release/mini-code.exe` (Windows / MSVC).
+The binary is produced at `build/tapto-code` (Linux) or
+`build/Release/tapto-code.exe` (Windows / MSVC).
 
 ### Dependencies
 
@@ -62,33 +62,33 @@ Three scopes, in increasing order of precedence:
 
 | Scope    | Flag       | Location                                              |
 | -------- | ---------- | ---------------------------------------------------- |
-| system   | `--system` | `%PROGRAMDATA%\minicode\config` / `/etc/minicode/config` |
-| global   | `--global` | `~/.minicode/config` (user home)                     |
-| local    | `--local`  | per-folder, stored centrally at `~/.minicode/projects/<folder>/config` |
+| system   | `--system` | `%PROGRAMDATA%\tapto\config` / `/etc/tapto/config` |
+| global   | `--global` | `~/.tapto/config` (user home)                     |
+| local    | `--local`  | per-folder, stored centrally at `~/.tapto/projects/<folder>/config` |
 
 When reading, **local overrides global overrides system**. Writes default to
 the **local** scope; pass `--global` or `--system` to target another scope.
 
 Local (project) settings are stored **centrally**, keyed by the working
-directory, under `~/.minicode/projects/` — not inside the project folder. So
+directory, under `~/.tapto/projects/` — not inside the project folder. So
 nothing is written into your repo, and cloning a repo can't bring its own config
 or runnable commands with it.
 
 ### Examples
 
 ```sh
-mini-code --global config set api-key sk_ant_xx23982932
-mini-code config set max-output-tokens 32000   # writes to this folder's local config
-mini-code config get api-key             # effective value across scopes
-mini-code config list                    # all effective values
-mini-code config list --show-origin      # prefix each entry with its scope
-mini-code --global config list           # only the global scope
-mini-code config unset editor            # remove from local
+tapto-code --global config set api-key sk_ant_xx23982932
+tapto-code config set max-output-tokens 32000   # writes to this folder's local config
+tapto-code config get api-key             # effective value across scopes
+tapto-code config list                    # all effective values
+tapto-code config list --show-origin      # prefix each entry with its scope
+tapto-code --global config list           # only the global scope
+tapto-code config unset editor            # remove from local
 ```
 
 ## Chat
 
-Running `mini-code` with no subcommand starts an interactive chat with the
+Running `tapto-code` with no subcommand starts an interactive chat with the
 configured AI provider (chat is the default action).
 It prints a `>` prompt, reads a line, sends it to the provider, prints the
 reply, and repeats. Type `/exit` (or Ctrl-D) to quit.
@@ -97,14 +97,14 @@ In-session slash commands: `/clear` (reset the conversation — useful to recove
 after filling the model's context window), `/list-commands`, and
 `/add-command <name> <command...>`.
 
-**First run:** if no provider/api-key is configured, mini-code prompts for them
-interactively and saves them to the global (`~/.minicode`) config, then starts
+**First run:** if no provider/api-key is configured, tapto-code prompts for them
+interactively and saves them to the global (`~/.tapto`) config, then starts
 the chat. You can also set them manually instead:
 
 ```sh
-mini-code --global config set provider-type claude        # claude | openai | gemini
-mini-code --global config set api-key sk_ant_xx23982932
-mini-code                                                 # starts the chat
+tapto-code --global config set provider-type claude        # claude | openai | gemini
+tapto-code --global config set api-key sk_ant_xx23982932
+tapto-code                                                 # starts the chat
 ```
 
 Chat config keys:
@@ -127,7 +127,7 @@ afterward is silent. `config list` masks the key (e.g. `sk_ant...cdef`); use
 `config get api-key` for the full value.
 
 **Diagnostic logging:** off by default. Set `trace-file` to a path
-(`mini-code config set trace-file ./minicode.log`) to append request/response
+(`tapto-code config set trace-file ./tapto.log`) to append request/response
 diagnostics there; unset it to disable.
 
 If a reply hits the output-token limit it is cut off and marked
@@ -137,7 +137,7 @@ If a reply hits the output-token limit it is cut off and marked
 ### Tools
 
 During a chat the model can call these local-filesystem tools (relative to the
-directory mini-code is launched from):
+directory tapto-code is launched from):
 
 - **`str_replace_based_edit_tool`** — view / create / str_replace / insert.
   Declared as Claude's built-in `text_editor_20250728` for Anthropic, and with
@@ -152,7 +152,7 @@ These edit real files on disk. `create` refuses to overwrite an existing file;
 `str_replace` requires the target string to be unique.
 
 **Sandbox:** the file tools (`str_replace_based_edit_tool`, `find_files`) are
-confined to the directory mini-code was started in and its subdirectories. Paths
+confined to the directory tapto-code was started in and its subdirectories. Paths
 that resolve outside that subtree — via `..`, an absolute path, or a symlink —
 are rejected. (`run_command` is governed separately: it can only run the
 commands you explicitly allow-list, so its reach is whatever you configure.)
@@ -166,10 +166,10 @@ per-folder store (not in the repo), so a cloned project can't ship runnable
 commands. Managed with:
 
 ```sh
-mini-code command add build-debug cmake --build build --config Debug
-mini-code --global command add gs git status
-mini-code command list                 # merged, with scope of each
-mini-code command remove build-debug
+tapto-code command add build-debug cmake --build build --config Debug
+tapto-code --global command add gs git status
+tapto-code command list                 # merged, with scope of each
+tapto-code command remove build-debug
 ```
 
 To get started quickly, [`contrib/commands`](contrib/commands) is a curated,
@@ -178,7 +178,7 @@ python, …) you can
 copy into your global store — see [contrib/README.md](contrib/README.md).
 
 Everything after the name is captured verbatim as the command line (so flags
-like `--config Debug` are part of the command, not parsed by mini-code). In a
+like `--config Debug` are part of the command, not parsed by tapto-code). In a
 chat the agent discovers them via `list_commands` and runs them via
 `run_command` — it can never supply arbitrary shell text, only pick a name.
 
@@ -188,7 +188,7 @@ A command template may contain positional placeholders `%1`, `%2`, … and `%*`
 (all remaining values). The agent fills them via `run_command`'s `args`:
 
 ```sh
-mini-code command add commit git commit -m %1
+tapto-code command add commit git commit -m %1
 # agent calls run_command{ name: "commit", args: ["fix: handle empty input"] }
 ```
 
@@ -215,13 +215,13 @@ outside (via `..`, an absolute path, or a symlink); the resolved absolute path
 is substituted.
 
 ```sh
-mini-code command add fmt clang-format -i %p1   # only formats files in-tree
+tapto-code command add fmt clang-format -i %p1   # only formats files in-tree
 ```
 
 ## Other commands
 
 ```sh
-mini-code version                        # print version info as JSON
+tapto-code version                        # print version info as JSON
 ```
 
 ### File format
@@ -229,17 +229,17 @@ mini-code version                        # print version info as JSON
 Plain `key = value` lines; `#` and `;` begin comments.
 
 ```
-# mini-code
+# tapto-code
 api-key = sk_ant_xx23982932
 model = claude-sonnet-4-6
 ```
 
 ## Part of TaptoMatic
 
-mini-code is a small, standalone spin-off of
+tapto-code is a small, standalone spin-off of
 [TaptoMatic](https://taptomatic.com) — a larger AI-powered development platform
 from Centlake Software AB where teams of AI agents collaborate on software
-projects under your direction. Where mini-code is a single-binary CLI you point
+projects under your direction. Where tapto-code is a single-binary CLI you point
 at a folder, TaptoMatic is a local platform (web GUI) built around *structured
 autonomy*: you set the direction with goals and tasks, and agents do the work.
 
@@ -263,13 +263,13 @@ autonomy*: you set the direction with goals and tasks, and agents do the work.
 - **Chat and MCP** — plan interactively, or drive it from Claude Code and other
   MCP-compatible tools via the built-in MCP server.
 
-Like mini-code, TaptoMatic runs locally and uses your own provider API keys
+Like tapto-code, TaptoMatic runs locally and uses your own provider API keys
 (Claude, OpenAI, Gemini, or a local inference server) — your code only leaves
 your machine to call those APIs. It's currently in preview; see
 [taptomatic.com](https://taptomatic.com).
 
 ## License
 
-mini-code is licensed under the Apache License, Version 2.0 (SPDX:
+tapto-code is licensed under the Apache License, Version 2.0 (SPDX:
 `Apache-2.0`). See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 Copyright 2026 Centlake Software AB.
