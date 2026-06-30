@@ -70,13 +70,20 @@ void print_usage(const std::string& text);
 
 // --- Chat session header ---------------------------------------------------
 
-// Print the banner shown at the start of a chat session.
+// Print the full startup banner: ASCII art logo, version, provider/model,
+// and slash-command hints — all in one styled block.
+void print_banner(const std::string& version,
+                  const std::string& provider,
+                  const std::string& model);
+
+// Legacy thin wrappers kept for any callers that haven't migrated yet.
 void print_chat_header(const std::string& provider,
                        const std::string& model,
                        const std::vector<std::string>& tool_names);
-
-// Print the slash-command help line shown under the chat header.
 void print_chat_hints();
+
+// Print the /help screen: slash-command reference and active tool list.
+void print_help(const std::vector<std::string>& tool_names);
 
 
 // --- First-run / interactive prompts --------------------------------------

@@ -705,6 +705,58 @@ void print_usage(const std::string& text) {
 // Chat session header
 // ---------------------------------------------------------------------------
 
+void print_banner(const std::string& version,
+                  const std::string& provider,
+                  const std::string& model) {
+    // ASCII art — kept to 58 columns so it fits inside an 80-col terminal
+    // even after the left margin added by most terminal emulators.
+    //
+    //  ████████╗ █████╗ ██████╗ ████████╗ ██████╗
+    //     ██╔══╝██╔══██╗██╔══██╗╚══██╔══╝██╔═══██╗
+    //     ██║   ███████║██████╔╝   ██║   ██║   ██║
+    //     ██║   ██╔══██║██╔═══╝    ██║   ██║   ██║
+    //     ██║   ██║  ██║██║        ██║   ╚██████╔╝
+    //     ╚═╝   ╚═╝  ╚═╝╚═╝        ╚═╝    ╚═════╝
+    //
+    //   ██████╗ ██████╗ ██████╗ ███████╗
+    //  ██╔════╝██╔═══██╗██╔══██╗██╔════╝
+    //  ██║     ██║   ██║██║  ██║█████╗
+    //  ██║     ██║   ██║██║  ██║██╔══╝
+    //  ╚██████╗╚██████╔╝██████╔╝███████╗
+    //   ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝
+
+    std::cout
+        << "\n"
+        << kBold << kCyan
+        << "  ████████╗ █████╗ ██████╗ ████████╗ ██████╗ \n"
+        << "     ██╔══╝██╔══██╗██╔══██╗╚══██╔══╝██╔═══██╗\n"
+        << "     ██║   ███████║██████╔╝   ██║   ██║   ██║\n"
+        << "     ██║   ██╔══██║██╔═══╝    ██║   ██║   ██║\n"
+        << "     ██║   ██║  ██║██║        ██║   ╚██████╔╝\n"
+        << "     ╚═╝   ╚═╝  ╚═╝╚═╝        ╚═╝    ╚═════╝ \n"
+        << kReset
+        << "\n"
+        << kBold
+        << "   ██████╗ ██████╗ ██████╗ ███████╗\n"
+        << "  ██╔════╝██╔═══██╗██╔══██╗██╔════╝\n"
+        << "  ██║     ██║   ██║██║  ██║█████╗  \n"
+        << "  ██║     ██║   ██║██║  ██║██╔══╝  \n"
+        << "  ╚██████╗╚██████╔╝██████╔╝███████╗\n"
+        << "   ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝\n"
+        << kReset
+        << "\n";
+
+    // Info line: version + provider/model
+    std::cout << kDim << "  v" << version
+              << "  │  " << provider << "  │  " << model
+              << kReset << "\n";
+
+    // Hints
+    std::cout << kDim
+              << "  /clear  /list-commands  /add-command <name> <cmd>  /help  /exit"
+              << kReset << "\n\n";
+}
+
 void print_chat_header(const std::string& provider,
                        const std::string& model,
                        const std::vector<std::string>& tool_names) {
@@ -720,6 +772,21 @@ void print_chat_header(const std::string& provider,
 void print_chat_hints() {
     std::cout << "Slash commands: /clear, /list-commands, "
                  "/add-command <name> <command...>, /exit\n";
+}
+
+void print_help(const std::vector<std::string>& tool_names) {
+    std::cout << "\n"
+              << kBold << "  Slash commands\n" << kReset
+              << "    /clear                        clear conversation history\n"
+              << "    /list-commands                list allow-listed shell commands\n"
+              << "    /add-command <name> <cmd>     add a new allow-listed command\n"
+              << "    /help                         show this help\n"
+              << "    /exit                         quit\n"
+              << "\n"
+              << kBold << "  Active tools\n" << kReset;
+    for (const auto& t : tool_names)
+        std::cout << "    " << t << "\n";
+    std::cout << "\n";
 }
 
 // ---------------------------------------------------------------------------

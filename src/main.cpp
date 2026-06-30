@@ -508,11 +508,7 @@ int cmd_chat() {
     Context context;
     context.tools = builtin_tools();
 
-    std::vector<std::string> tool_names;
-    for (const auto& t : context.tools) tool_names.push_back(t.name);
-    ui::print_chat_header(*provider, model, tool_names);
-    ui::print_chat_hints();
-
+    ui::print_banner(TAPTO_VERSION, *provider, model);
     std::string line;
     while (true) {
         ui::print_prompt("\x1b[?25h> "); // ensure cursor is visible at the prompt
@@ -541,6 +537,12 @@ int cmd_chat() {
                     ui::print_command_entry(level_name(e.origin), e.name, e.command);
                 }
             }
+            continue;
+        }
+        if (line == "/help") {
+            std::vector<std::string> tool_names;
+            for (const auto& t : context.tools) tool_names.push_back(t.name);
+            ui::print_help(tool_names);
             continue;
         }
         if (line.rfind("/add-command", 0) == 0) {

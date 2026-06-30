@@ -66,3 +66,12 @@ else()
 endif()
 
 install(TARGETS tapto-code RUNTIME DESTINATION bin)
+
+# --- Test driver: wide-table clip exercise ----------------------------------
+add_executable(test-table src/test_table.cpp src/ui.cpp)
+target_include_directories(test-table PRIVATE include)
+if(MSVC)
+  target_compile_options(test-table PRIVATE /W4 /EHsc /utf-8)
+else()
+  target_compile_options(test-table PRIVATE -Wall -Wextra)
+endif()
