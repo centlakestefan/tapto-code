@@ -366,7 +366,11 @@ std::string execute_find_files(Context& /*context*/, const json& in) {
             if (!wildcard_match(pattern, p.filename().string())) continue;
 
             Match m;
-            m.path = p.generic_string();
+            // Report paths relative to the sandbox root so they match how the
+            // model supplies paths and round-trip back into the other tools.
+            // (The iterator yields absolute paths because `base` is absolute.)
+            m.path = p.lexically_relative(sandbox_root()).generic_string();
+            if (m.path.empty()) m.path = p.generic_string();
 
             if (has_query) {
                 std::error_code sz_ec;
