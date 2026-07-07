@@ -450,17 +450,97 @@ bool first_run_setup() {
     return true;
 }
 
-// Read one logical prompt from stdin. Usually that's a single line, but when
-// bracketed paste is enabled most terminals wrap pasted text in ESC[200~ ...
-// ESC[201~ markers. std::getline stops at the first embedded newline, so a
-// multi-line paste would otherwise arrive one line per loop iteration. Detect
-// the start marker and keep reading until the end marker (which may land on a
-// later line), rejoining the pasted lines into a single prompt. Terminals that
-// don't support bracketed paste never send the markers, so behaviour is
-// unchanged. Returns false on EOF.
+#ifdef _WIN32
+// Read one cooked line from the console (line editing / backspace still work).
+// Returns false on read failure; sets got=false on EOF (Ctrl-Z). The returned
+// UTF-8 string has any trailing CR/LF stripped.
+bool win_read_console_line(HANDLE in, std::string& utf8, bool& got) {
+    got = false;
+    std::wstring wline;
+    wchar_t buf[4096];
+    for (;;) {
+        DWORD n = 0;
+        if (!ReadConsoleW(in, buf, (DWORD)(sizeof(buf) / sizeof(buf[0])), &n, nullptr))
+            return false;
+        if (n == 0) return true;          // EOF: got stays false
+        wline.append(buf, n);
+        if (!wline.empty() && wline.back() == L'\n') break; // full line read
+    }
+    got = true;
+    while (!wline.empty() && (wline.back() == L'\n' || wline.back() == L'\r'))
+        wline.pop_back();
+    utf8.clear();
+    if (wline.empty()) return true;
+    int len = WideCharToMultiByte(CP_UTF8, 0, wline.data(), (int)wline.size(),
+                                  nullptr, 0, nullptr, nullptr);
+    utf8.resize(len);
+    WideCharToMultiByte(CP_UTF8, 0, wline.data(), (int)wline.size(),
+                        &utf8[0], len, nullptr, nullptr);
+    return true;
+}
+
+// True when the console input queue already holds a typed/pasted character,
+// i.e. more of a paste is waiting. A paste dumps all of its lines into the
+// queue at once, so this lets us tell a multi-line paste apart from a human
+// pressing Enter. Stray key-up / control records (e.g. the Enter key-up left
+// after the line we just read) are ignored so we never block waiting for input
+// that isn't coming.
+bool win_char_input_pending(HANDLE in) {
+    DWORD avail = 0;
+    if (!GetNumberOfConsoleInputEvents(in, &avail) || avail == 0) return false;
+    std::vector<INPUT_RECORD> recs(avail);
+    DWORD read = 0;
+    if (!PeekConsoleInput(in, recs.data(), avail, &read)) return false;
+    for (DWORD i = 0; i < read; ++i) {
+        const INPUT_RECORD& r = recs[i];
+        if (r.EventType == KEY_EVENT && r.Event.KeyEvent.bKeyDown &&
+            r.Event.KeyEvent.uChar.UnicodeChar != 0)
+            return true;
+    }
+    return false;
+}
+#endif
+
+// Read one logical prompt from stdin. Usually that's a single line, but a
+// multi-line paste must arrive as a single prompt rather than one message per
+// line. Two mechanisms handle this:
+//
+//  * Windows interactive console: the bracketed-paste markers below are only
+//    emitted when stdin is in raw (ENABLE_VIRTUAL_TERMINAL_INPUT) mode, which
+//    would disable cooked line editing. So instead we read cooked lines with
+//    ReadConsoleW and, after each line, peek the console input queue: if more
+//    character input is already waiting it belongs to the same paste, so we
+//    keep reading and join the lines.
+//
+//  * Other terminals (POSIX, or redirected/piped stdin): most wrap pasted text
+//    in ESC[200~ ... ESC[201~ markers. std::getline stops at the first embedded
+//    newline, so we detect the start marker and keep reading until the end
+//    marker (which may land on a later line), rejoining the pasted lines.
+//    Terminals that don't support bracketed paste never send the markers, so
+//    behaviour is unchanged.
+//
+// Returns false on EOF.
 bool read_user_input(std::string& out) {
     static const std::string kPasteStart = "\x1b[200~";
     static const std::string kPasteEnd   = "\x1b[201~";
+
+#ifdef _WIN32
+    HANDLE in = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD cmode = 0;
+    if (in != INVALID_HANDLE_VALUE && GetConsoleMode(in, &cmode)) {
+        // Interactive console: read cooked lines and coalesce a multi-line paste.
+        bool got = false;
+        if (!win_read_console_line(in, out, got) || !got) return false;
+        while (win_char_input_pending(in)) {
+            std::string more;
+            if (!win_read_console_line(in, more, got) || !got) break;
+            out += '\n';
+            out += more;
+        }
+        return true;
+    }
+    // Redirected/piped stdin falls through to the generic getline path below.
+#endif
 
     std::string line;
     if (!std::getline(std::cin, line)) return false;
@@ -565,7 +645,12 @@ int cmd_chat() {
     context.tools = builtin_tools();
 
     ui::print_banner(TAPTO_CODE_VERSION, *provider, model);
+#ifndef _WIN32
+    // POSIX terminals deliver multi-line pastes via bracketed-paste markers.
+    // On Windows read_user_input() coalesces pastes at the console API level, so
+    // enabling this here would only risk conhost injecting the markers as text.
     std::cout << "\x1b[?2004h" << std::flush; // enable bracketed paste (multi-line input)
+#endif
     std::string line;
     while (true) {
         ui::print_prompt("\x1b[?25h> "); // ensure cursor is visible at the prompt
@@ -639,7 +724,9 @@ int cmd_chat() {
             ui::print_error(e.what());
         }
     }
+#ifndef _WIN32
     std::cout << "\x1b[?2004l" << std::flush; // disable bracketed paste on exit
+#endif
     return 0;
 }
 
