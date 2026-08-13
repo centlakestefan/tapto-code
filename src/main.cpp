@@ -52,7 +52,7 @@ const char* kUsage =
     "tapto-code - a small cross-platform CLI\n"
     "\n"
     "Usage:\n"
-    "  tapto-code                                    Start an interactive chat (default)\n"
+    "  tapto-code [--provider <name>]                Start an interactive chat (default)\n"
     "  tapto-code [--system|--global|--local] config <command> [args]\n"
     "  tapto-code [--system|--global|--local] command <add|remove|list> ...\n"
     "\n"
@@ -70,9 +70,23 @@ const char* kUsage =
     "Other commands:\n"
     "  version             Print version info as JSON\n"
     "\n"
-    "Chat config keys: provider-type (claude|openai|gemini), api-key,\n"
-    "  provider-url (optional), model (optional), max-output-tokens (optional),\n"
-    "  max-tool-iterations (optional, default 200), print-cot (optional, default true)\n"
+    "Chat config keys: provider (which provider block to use), max-output-tokens\n"
+    "  (optional), max-tool-iterations (optional, default 200), print-cot\n"
+    "  (optional, default true), system-prompt, trace-file\n"
+    "\n"
+    "A provider is a named block of keys, so several backends -- including two\n"
+    "local servers speaking the same API -- coexist in one config store:\n"
+    "\n"
+    "  qwen36-provider-type = openai         gemma4-provider-type = openai\n"
+    "  qwen36-provider-url  = http://a:8000  gemma4-provider-url  = http://b:8081\n"
+    "  qwen36-model         = Qwen3-VL-30B   gemma4-model         = gemma-3-27b\n"
+    "  qwen36-api-key       = local          gemma4-api-key       = local\n"
+    "\n"
+    "Then: tapto-code --provider gemma4, or 'provider = gemma4' for the default.\n"
+    "-provider-type names the API shape to speak, not the model; claude, openai\n"
+    "and gemini work as names with no config at all. The unscoped model,\n"
+    "provider-url and api-key apply only to the default provider, so a local\n"
+    "endpoint's URL is never sent to a hosted one, or its key to a local one.\n"
     "\n"
     "Scope flags:\n"
     "  --system   machine-wide config\n"
@@ -80,8 +94,9 @@ const char* kUsage =
     "  --local    per-folder config (./.tapto); the default for writes\n"
     "\n"
     "Options:\n"
-    "  --show-origin   with 'list', prefix each entry with its scope\n"
-    "  -h, --help      show this help\n"
+    "  --provider <name>  chat with this provider instead of the configured default\n"
+    "  --show-origin      with 'list', prefix each entry with its scope\n"
+    "  -h, --help         show this help\n"
     "\n"
     "Precedence (highest wins): local > global > system\n";
 
@@ -124,16 +139,60 @@ std::vector<EffectiveEntry> effective_config() {
     return merged;
 }
 
+// True if `key` ends with `suffix`, with at least one character before it.
+bool has_suffix(const std::string& key, const std::string& suffix) {
+    return key.size() > suffix.size() &&
+           key.compare(key.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+// The four keys a provider block owns, each written as `<name>-<key>`.
+const char* kProviderBlockKeys[] = {"provider-type", "api-key", "provider-url", "model"};
+
+// A provider name has to survive a round trip through the `key = value` config
+// format, so it is limited to characters that can't be mistaken for syntax.
+bool is_valid_provider_name(const std::string& name) {
+    if (name.empty()) return false;
+    for (unsigned char c : name) {
+        if (!std::isalnum(c) && c != '-' && c != '_' && c != '.') return false;
+    }
+    return true;
+}
+
+// If `key` is a provider-block key, the block's name; otherwise empty.
+// `provider-type` alone is not one: it is the legacy unscoped key.
+std::string provider_name_of_key(const std::string& key, const std::string& block_key) {
+    const std::string suffix = "-" + block_key;
+    if (!has_suffix(key, suffix)) return "";
+    return key.substr(0, key.size() - suffix.size());
+}
+
 // Config keys tapto-code understands; `config set` rejects anything else.
+// Besides the unscoped keys there is one set per provider block, under a
+// free-form name: qwen36-provider-type, qwen36-model, qwen36-api-key, ...
 bool is_supported_config_key(const std::string& key) {
     static const char* kKeys[] = {
-        "provider-type", "api-key", "provider-url", "model",
+        "provider", "provider-type", "api-key", "provider-url", "model",
         "max-output-tokens", "max-tool-iterations", "system-prompt", "trace-file", "print-cot",
     };
     for (const char* k : kKeys) {
         if (key == k) return true;
     }
+    for (const char* k : kProviderBlockKeys) {
+        if (is_valid_provider_name(provider_name_of_key(key, k))) return true;
+    }
     return false;
+}
+
+const char* kSupportedKeysHelp =
+    "provider, provider-url, model, api-key, "
+    "max-output-tokens, max-tool-iterations, system-prompt, trace-file, print-cot, "
+    "and per provider <name>-provider-type, <name>-provider-url, <name>-model, "
+    "<name>-api-key";
+
+// True for the unscoped api-key and for any provider block's own key, so both
+// are masked when listed and both warn about plaintext storage when written.
+bool is_api_key_key(const std::string& key) {
+    return key == "api-key" || has_suffix(key, "-api-key");
 }
 
 int cmd_set(const Args& a) {
@@ -143,9 +202,7 @@ int cmd_set(const Args& a) {
     }
     if (!is_supported_config_key(a.positional[1])) {
         ui::print_error("unknown config key '" + a.positional[1] +
-                        "'.\n  supported keys: provider-type, api-key, provider-url, "
-                        "model, max-output-tokens, max-tool-iterations, system-prompt, "
-                        "trace-file, print-cot");
+                        "'.\n  supported keys: " + kSupportedKeysHelp);
         return 2;
     }
     Level level = a.level.value_or(Level::Local);
@@ -158,8 +215,8 @@ int cmd_set(const Args& a) {
         ui::print_error(e.what());
         return 1;
     }
-    if (a.positional[1] == "api-key") {
-        ui::print_warning("api-key stored in plaintext at " + path.string() +
+    if (is_api_key_key(a.positional[1])) {
+        ui::print_warning(a.positional[1] + " stored in plaintext at " + path.string() +
                           "; set the provider's API key env var (e.g. ANTHROPIC_API_KEY) "
                           "to avoid storing it on disk");
     }
@@ -220,7 +277,7 @@ std::string mask_secret(const std::string& v) {
 }
 
 std::string list_value(const std::string& key, const std::string& value) {
-    return key == "api-key" ? mask_secret(value) : value;
+    return is_api_key_key(key) ? mask_secret(value) : value;
 }
 
 int cmd_list(const Args& a) {
@@ -322,32 +379,63 @@ int cmd_command(std::optional<Level> level, const std::vector<std::string>& rest
     return 2;
 }
 
-// Look up a config key's effective value across all scopes.
+// Look up a config key's effective value across all scopes. A key present but
+// empty counts as unset, so `model =` falls back to the default instead of
+// asking the provider for a model with no name.
 std::optional<std::string> get_effective(const std::string& key) {
     for (const auto& entry : effective_config()) {
-        if (entry.key == key) return entry.value;
+        if (entry.key == key) {
+            if (entry.value.empty()) return std::nullopt;
+            return entry.value;
+        }
     }
     return std::nullopt;
 }
 
-std::string default_url(const std::string& provider) {
-    if (provider == "claude") return "https://api.anthropic.com";
-    if (provider == "openai") return "https://api.openai.com";
-    if (provider == "gemini") return "https://generativelanguage.googleapis.com";
+// ---------------------------------------------------------------------------
+// Providers
+//
+// A provider has a *name* and a *dialect*, and they are not the same thing.
+// The name selects a block of config keys and is free-form — qwen36, gemma4,
+// work-claude. The dialect is one of the three request shapes this program can
+// speak, named by that block's `<name>-provider-type` key:
+//
+//   qwen36-provider-type = openai         gemma4-provider-type = openai
+//   qwen36-provider-url  = http://a:8000  gemma4-provider-url  = http://b:8081
+//   qwen36-model         = Qwen3-VL-30B   gemma4-model         = gemma-3-27b
+//   qwen36-api-key       = local          gemma4-api-key       = local
+//
+// Two local servers speaking the same API can therefore be told apart, which
+// they could not when the name *was* the dialect and one store held at most one
+// configuration per vendor. The config store is shared with tapto-vnc, which
+// reads the same blocks.
+// ---------------------------------------------------------------------------
+
+// The request shapes this program can speak. Used as a provider name, each one
+// means its own dialect with that vendor's defaults, so `claude`, `openai` and
+// `gemini` need no block at all.
+bool is_dialect(const std::string& s) {
+    return s == "claude" || s == "openai" || s == "gemini";
+}
+
+std::string default_url(const std::string& dialect) {
+    if (dialect == "claude") return "https://api.anthropic.com";
+    if (dialect == "openai") return "https://api.openai.com";
+    if (dialect == "gemini") return "https://generativelanguage.googleapis.com";
     return "";
 }
 
-std::string default_model(const std::string& provider) {
-    if (provider == "claude") return "claude-sonnet-4-6";
-    if (provider == "openai") return "gpt-4o";
-    if (provider == "gemini") return "gemini-2.0-flash";
+std::string default_model(const std::string& dialect) {
+    if (dialect == "claude") return "claude-sonnet-4-6";
+    if (dialect == "openai") return "gpt-4o";
+    if (dialect == "gemini") return "gemini-2.0-flash";
     return "";
 }
 
-const char* api_key_env_var(const std::string& provider) {
-    if (provider == "claude") return "ANTHROPIC_API_KEY";
-    if (provider == "openai") return "OPENAI_API_KEY";
-    if (provider == "gemini") return "GEMINI_API_KEY";
+const char* api_key_env_var(const std::string& dialect) {
+    if (dialect == "claude") return "ANTHROPIC_API_KEY";
+    if (dialect == "openai") return "OPENAI_API_KEY";
+    if (dialect == "gemini") return "GEMINI_API_KEY";
     return "";
 }
 
@@ -365,12 +453,112 @@ std::optional<std::string> env_value(const char* name) {
     return std::nullopt;
 }
 
-// Resolve the API key for a provider: the provider's environment variable first,
-// otherwise the config value. (The plaintext warning is emitted when the key is
-// written, not on use.)
-std::optional<std::string> resolve_api_key(const std::string& provider) {
-    if (auto v = env_value(api_key_env_var(provider))) return v;
-    return get_effective("api-key");
+// Every provider block the store defines, found by its `<name>-provider-type`
+// key. Only used to name the alternatives when someone asks for a provider that
+// isn't configured — a list of what exists is worth more than a list of what is
+// allowed.
+std::vector<std::string> configured_provider_names() {
+    std::vector<std::string> names;
+    for (const auto& entry : effective_config()) {
+        if (entry.value.empty()) continue; // an empty value counts as unset
+        std::string name = provider_name_of_key(entry.key, "provider-type");
+        if (!name.empty()) names.push_back(std::move(name));
+    }
+    return names;
+}
+
+// The provider used when none is named on the command line. `provider-type`
+// doubles as the legacy spelling: a store saying `provider-type = claude` names
+// the block "claude", whose dialect is claude because that is also a dialect
+// name, so nothing needs rewriting.
+std::optional<std::string> default_provider_name() {
+    if (auto v = get_effective("provider")) return v;
+    return get_effective("provider-type");
+}
+
+// The dialect a provider name resolves to: its block's `-provider-type`, or the
+// name itself when that is a dialect. Empty when the name isn't configured.
+std::string provider_dialect(const std::string& name) {
+    if (auto v = get_effective(name + "-provider-type")) return *v;
+    return is_dialect(name) ? name : "";
+}
+
+// Resolve the API key for a provider block. The block's own key comes first: it
+// is the most specific thing the user wrote, it is the only thing that can be
+// right when two blocks share a dialect, and — more sharply — an environment
+// variable winning here would send a real vendor key to whatever
+// `<name>-provider-url` points at, which for a local server means writing it
+// into somebody's log. The plaintext warning is emitted when the key is
+// written, not on use.
+std::string resolve_api_key(const std::string& name, const std::string& dialect) {
+    if (auto v = get_effective(name + "-api-key")) return *v;
+    if (auto v = env_value(api_key_env_var(dialect))) return *v;
+    // The unscoped api-key belongs to the default provider only; otherwise one
+    // vendor's key would be handed to another.
+    if (auto def = default_provider_name(); def && *def == name) {
+        if (auto v = get_effective("api-key")) return *v;
+    }
+    return "";
+}
+
+// A provider block resolved into everything a chat session needs.
+struct ResolvedProvider {
+    std::string name;    // the config block, e.g. "qwen36"
+    std::string dialect; // claude | openai | gemini
+    std::string url;
+    std::string model;
+    std::string api_key; // empty if none is configured; the caller decides
+};
+
+// Resolve a provider name (empty for the configured default). Prints its own
+// error and returns nullopt when the name names no dialect this program speaks.
+std::optional<ResolvedProvider> resolve_provider(const std::string& requested) {
+    const std::string def = default_provider_name().value_or("claude");
+
+    ResolvedProvider p;
+    p.name = requested.empty() ? def : requested;
+    p.dialect = provider_dialect(p.name);
+
+    if (p.dialect.empty()) {
+        std::string msg = "unknown provider '" + p.name + "'";
+        auto names = configured_provider_names();
+        if (!names.empty()) {
+            msg += "; configured:";
+            for (const auto& n : names) msg += " " + n;
+        }
+        msg += ".\n  name one by setting '" + p.name +
+               "-provider-type' to claude, openai or gemini, "
+               "or use claude, openai or gemini directly";
+        ui::print_error(msg);
+        return std::nullopt;
+    }
+    if (!is_dialect(p.dialect)) {
+        ui::print_error("'" + p.name + "-provider-type' is '" + p.dialect +
+                        "'; expected claude, openai or gemini."
+                        "\n  that key names the API shape to speak, not the model");
+        return std::nullopt;
+    }
+
+    // The unscoped keys belong to the default provider only. Otherwise a local
+    // endpoint's URL and model would be sent to a hosted vendor, and vice versa.
+    const bool is_default = (p.name == def);
+    auto scoped = [&](const std::string& key) -> std::optional<std::string> {
+        if (auto v = get_effective(p.name + "-" + key)) return v;
+        if (is_default) return get_effective(key);
+        return std::nullopt;
+    };
+
+    p.url = scoped("provider-url").value_or(default_url(p.dialect));
+    p.model = scoped("model").value_or(default_model(p.dialect));
+    p.api_key = resolve_api_key(p.name, p.dialect);
+    return p;
+}
+
+// How the provider is shown to the user: the block name, plus the dialect when
+// it adds something the name doesn't already say.
+std::string provider_label(const ResolvedProvider& p) {
+    if (p.name == p.dialect) return p.name;
+    return p.name + " (" + p.dialect + ")";
 }
 
 const char* kDefaultSystemPrompt =
@@ -410,34 +598,41 @@ bool set_global(const std::string& key, const std::string& value) {
 }
 
 // First-run setup: when the essentials aren't configured, interactively prompt
-// for provider-type and api-key and store them in the global config. Returns
+// for a provider and its API key and store them in the global config. Returns
 // false if the user aborts (EOF) or gives invalid input.
+//
+// What it writes is a named provider block — `provider = claude` plus
+// `claude-api-key` — which is the shape tapto-vnc reads from the same store, and
+// leaves room for a second provider later without the two sharing one key.
 bool first_run_setup() {
     ui::print_setup_welcome();
 
-    if (!get_effective("provider-type")) {
+    std::string name = default_provider_name().value_or("");
+    if (name.empty()) {
         ui::print_setup_provider_prompt();
         std::string line;
         if (!std::getline(std::cin, line)) return false;
-        std::string provider = trim(line);
-        if (provider != "claude" && provider != "openai" && provider != "gemini") {
+        name = trim(line);
+        // Setup only offers the three dialects by name; a block under a name of
+        // its own is something to write into the config by hand afterwards.
+        if (!is_dialect(name)) {
             ui::print_error("provider must be claude, openai, or gemini");
             return false;
         }
-        if (!set_global("provider-type", provider)) return false;
+        if (!set_global("provider", name)) return false;
     }
 
-    auto provider = get_effective("provider-type");
-    const char* keyvar = provider ? api_key_env_var(*provider) : "";
-    // Only prompt for an api-key if it isn't already available via the env var.
-    if (!env_value(keyvar) && !get_effective("api-key")) {
+    const std::string dialect = provider_dialect(name);
+    const char* keyvar = api_key_env_var(dialect);
+    // Only prompt for a key if one isn't already available (env var included).
+    if (resolve_api_key(name, dialect).empty()) {
         ui::print_setup_apikey_prompt(keyvar);
         std::string line;
         if (!std::getline(std::cin, line)) return false;
         std::string key = trim(line);
         if (!key.empty()) {
-            if (!set_global("api-key", key)) return false;
-            std::string warn = "api-key stored in plaintext at " +
+            if (!set_global(name + "-api-key", key)) return false;
+            std::string warn = name + "-api-key stored in plaintext at " +
                                config_path(Level::Global).string();
             if (keyvar && *keyvar)
                 warn += "; set " + std::string(keyvar) + " to avoid storing it on disk";
@@ -574,32 +769,45 @@ bool read_user_input(std::string& out) {
     return true;
 }
 
-int cmd_chat() {
+// `requested_provider` is the --provider argument, empty for the configured
+// default.
+int cmd_chat(const std::string& requested_provider) {
     if (auto tf = get_effective("trace-file")) mclog_set_file(*tf);
 
-    // Essentials: provider-type plus an api-key available via the provider's
-    // environment variable or config. Run first-run setup if anything's missing.
-    auto provider = get_effective("provider-type");
-    auto have_key = [&] {
-        return provider && (env_value(api_key_env_var(*provider)) || get_effective("api-key"));
-    };
-    if (!provider || !have_key()) {
+    // Essentials: a provider and an API key for it. Prompt for whatever is
+    // missing — but only for the default provider: a name given on the command
+    // line is taken at face value, so a typo is reported rather than answered
+    // with a setup wizard that would configure something else.
+    const bool may_prompt = requested_provider.empty();
+    bool ran_setup = false;
+    if (may_prompt && !default_provider_name()) {
         if (!first_run_setup()) return 2; // setup prints its own errors
-        provider = get_effective("provider-type");
-        if (!provider || !have_key()) {
-            ui::print_error("provider-type and api-key must be configured to chat.");
-            return 2;
-        }
+        ran_setup = true;
     }
 
-    std::string url = get_effective("provider-url").value_or(default_url(*provider));
-    std::string model = get_effective("model").value_or(default_model(*provider));
+    auto provider = resolve_provider(requested_provider); // prints its own errors
+    if (!provider) return 2;
 
-    auto key = resolve_api_key(*provider); // env var first, else config (with warning)
-    if (!key) {
-        ui::print_error("no api-key available for " + *provider);
+    if (provider->api_key.empty() && may_prompt && !ran_setup) {
+        if (!first_run_setup()) return 2;
+        provider = resolve_provider(requested_provider);
+        if (!provider) return 2;
+    }
+    if (provider->api_key.empty()) {
+        std::string msg = "no API key for provider '" + provider->name + "'; set " +
+                          api_key_env_var(provider->dialect) +
+                          ", or run: tapto-code --global config set " + provider->name +
+                          "-api-key <key>";
+        if (auto def = default_provider_name(); def && *def != provider->name) {
+            msg += "\n  (the unscoped api-key belongs to '" + *def +
+                   "', so it is not used here)";
+        }
+        ui::print_error(msg);
         return 2;
     }
+
+    const std::string& url = provider->url;
+    const std::string& model = provider->model;
 
     // ai_config is declared before client so it outlives the client, which
     // holds a pointer to it.
@@ -625,16 +833,15 @@ int cmd_chat() {
                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         ai_config.setPrintCot(!(s == "false" || s == "0" || s == "off" || s == "no"));
     }
+    // Chosen by dialect, never by name: 'gemma4' is a name this program has
+    // never heard of, and what it means is whatever its -provider-type says.
     std::unique_ptr<AiBackend> client;
-    if (*provider == "claude") {
-        client = std::make_unique<ClaudeClient>(&ai_config, url, model, *key);
-    } else if (*provider == "openai") {
-        client = std::make_unique<OpenAIClient>(&ai_config, url, model, *key);
-    } else if (*provider == "gemini") {
-        client = std::make_unique<GeminiClient>(&ai_config, url, model, *key);
+    if (provider->dialect == "claude") {
+        client = std::make_unique<ClaudeClient>(&ai_config, url, model, provider->api_key);
+    } else if (provider->dialect == "openai") {
+        client = std::make_unique<OpenAIClient>(&ai_config, url, model, provider->api_key);
     } else {
-        ui::print_error("unknown provider-type '" + *provider + "' (expected claude|openai|gemini)");
-        return 2;
+        client = std::make_unique<GeminiClient>(&ai_config, url, model, provider->api_key);
     }
 
     client->start();
@@ -644,7 +851,9 @@ int cmd_chat() {
     Context context;
     context.tools = builtin_tools();
 
-    ui::print_banner(TAPTO_CODE_VERSION, *provider, model);
+    // The resolved provider is printed, so a block wired to the wrong dialect or
+    // URL shows up here rather than as malformed requests.
+    ui::print_banner(TAPTO_CODE_VERSION, provider_label(*provider), model, url);
 #ifndef _WIN32
     // POSIX terminals deliver multi-line pastes via bracketed-paste markers.
     // On Windows read_user_input() coalesces pastes at the console API level, so
@@ -757,6 +966,7 @@ int main(int argc, char** argv) {
 
     Args a;
     std::vector<std::string> rest;
+    std::string provider; // --provider <name>, empty for the configured default
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -765,12 +975,24 @@ int main(int argc, char** argv) {
         else if (arg == "--local") a.level = Level::Local;
         else if (arg == "--show-origin") a.show_origin = true;
         else if (arg == "-h" || arg == "--help") { ui::print_usage(kUsage); return 0; }
+        else if (arg == "--provider") {
+            if (i + 1 >= argc) {
+                ui::print_error("--provider requires a name");
+                return 2;
+            }
+            provider = argv[++i];
+        }
+        else if (arg.rfind("--provider=", 0) == 0) provider = arg.substr(11);
         else rest.push_back(std::move(arg));
     }
 
     // No subcommand: start a chat (it's the default action).
     if (rest.empty()) {
-        return cmd_chat();
+        return cmd_chat(provider);
+    }
+    if (!provider.empty()) {
+        ui::print_error("--provider only applies to chat");
+        return 2;
     }
     const std::string& top = rest[0];
     if (top == "version") return cmd_version();

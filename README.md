@@ -14,8 +14,10 @@ approved — all from a single self-contained C++17 binary.
 - **No permission prompts** — it never interrupts to ask. Its reach is bounded by
   design instead: run it in a folder and it stays there, and it only runs the
   commands you configured beforehand.
-- **Multiple providers** — Claude, OpenAI, or Gemini, chosen via config; the API
-  key is read from an environment variable or config.
+- **Multiple providers** — Claude, any OpenAI-compatible endpoint (vLLM,
+  llama.cpp, LM Studio, OpenAI itself), or Gemini. Name as many as you like in
+  one config, including two local servers speaking the same API, and switch with
+  `--provider`. The API key is read from an environment variable or config.
 - **File tools** — the model can view, create, and edit files and search the
   tree, confined to the directory you launch it in (sandboxed: no escaping via
   `..`, absolute paths, or symlinks).
@@ -77,19 +79,20 @@ or runnable commands with it.
 ### Examples
 
 ```sh
-tapto-code --global config set api-key sk_ant_xx23982932
+tapto-code --global config set claude-api-key sk_ant_xx23982932
 tapto-code config set max-output-tokens 32000   # writes to this folder's local config
-tapto-code config get api-key             # effective value across scopes
+tapto-code config get claude-api-key      # effective value across scopes
 tapto-code config list                    # all effective values
 tapto-code config list --show-origin      # prefix each entry with its scope
 tapto-code --global config list           # only the global scope
-tapto-code config unset editor            # remove from local
+tapto-code config unset model             # remove from local
 ```
 
 ## Chat
 
 Running `tapto-code` with no subcommand starts an interactive chat with the
-configured AI provider (chat is the default action).
+configured AI provider (chat is the default action); `--provider <name>` picks a
+different one for this session.
 It prints a `>` prompt, reads a line, sends it to the provider, prints the
 reply, and repeats. Type `/exit` (or Ctrl-D) to quit.
 
@@ -102,31 +105,72 @@ interactively and saves them to the global (`~/.tapto`) config, then starts
 the chat. You can also set them manually instead:
 
 ```sh
-tapto-code --global config set provider-type claude        # claude | openai | gemini
-tapto-code --global config set api-key sk_ant_xx23982932
+tapto-code --global config set provider claude             # claude | openai | gemini
+tapto-code --global config set claude-api-key sk_ant_xx23982932
 tapto-code                                                 # starts the chat
 ```
 
 Chat config keys:
 
-| Key             | Required | Default (per provider)                              |
+| Key             | Required | Default (per dialect)                               |
 | --------------- | -------- | --------------------------------------------------- |
-| `provider-type` | yes      | —  (`claude` / `openai` / `gemini`)                 |
-| `api-key`       | yes      | —                                                   |
-| `provider-url`  | no       | claude: `https://api.anthropic.com`, openai: `https://api.openai.com`, gemini: `https://generativelanguage.googleapis.com` |
-| `model`         | no       | claude: `claude-sonnet-4-6`, openai: `gpt-4o`, gemini: `gemini-2.0-flash` |
+| `provider`      | yes      | `claude` — which provider block to use              |
+| `<name>-provider-type` | —  | `claude` / `openai` / `gemini` — the API to speak  |
+| `<name>-api-key` | yes     | — or the vendor's environment variable               |
+| `<name>-provider-url` | no | claude: `https://api.anthropic.com`, openai: `https://api.openai.com`, gemini: `https://generativelanguage.googleapis.com` |
+| `<name>-model`  | no       | claude: `claude-sonnet-4-6`, openai: `gpt-4o`, gemini: `gemini-2.0-flash` |
 | `max-output-tokens` | no   | `16000` — raise it for long replies (large tables, reports) |
 | `max-tool-iterations` | no | `200` — max tool-call rounds per reply before the agent stops |
 | `print-cot`     | no       | `true` — show the model's intermediate reasoning/text during tool calls; set `false` to keep it in the trace file only |
-| `trace-file`    | no       | unset — set to a path to enable diagnostic logging |
+| `system-prompt` | no       | built-in prompt                                      |
+| `trace-file`    | no       | unset — set to a path to enable diagnostic logging  |
 
-**API key from the environment:** the key is read from the provider's
-environment variable first — `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` /
-`GEMINI_API_KEY` — and only falls back to the `api-key` config value if the
-variable isn't set. Writing the key to config (via `config set api-key` or the
-first-run prompt) prints a one-time plaintext-storage warning; using it
-afterward is silent. `config list` masks the key (e.g. `sk_ant...cdef`); use
-`config get api-key` for the full value.
+### Naming providers
+
+A provider has a **name** and a **dialect**. The name picks a block of keys and
+can be anything; the dialect is one of the three request shapes tapto-code
+speaks, named by that block's `-provider-type`. So two local servers that both
+expose an OpenAI-compatible API can still be told apart:
+
+```
+qwen-provider-type = openai          gemma-provider-type = openai
+qwen-provider-url  = http://box:8000 gemma-provider-url  = http://box:8081
+qwen-model         = Qwen3-VL-30B    gemma-model         = gemma-3-27b
+qwen-api-key       = local           gemma-api-key       = local
+```
+
+```sh
+tapto-code --provider gemma          # or 'provider = gemma' as the default
+```
+
+`claude`, `openai` and `gemini` need no block at all — used as a name, each
+means its own dialect with that vendor's defaults. Asking for a name the store
+does not define lists the ones it does. The resolved provider, dialect, model and
+URL are printed in the startup banner, so a block wired to the wrong dialect
+shows up immediately rather than as malformed requests.
+
+The unscoped `model`, `provider-url` and `api-key` apply only to the **default**
+provider — the one `provider` names. Otherwise a local endpoint's URL would be
+sent to a hosted vendor, or a hosted key to a local server.
+
+An older store using `provider-type = claude` with an unscoped `api-key` and
+`model` keeps working: `provider-type` is read as the default provider's name
+when `provider` is absent.
+
+The config store is shared with
+[tapto-vnc](https://github.com/centlakestefan/tapto-vnc), which reads the same
+provider blocks.
+
+**API key resolution:** `<name>-api-key` first, then the vendor's environment
+variable — `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` — then the
+unscoped `api-key` for the default provider. The block's own key wins on purpose:
+an environment variable taking precedence would send a real vendor key to
+whatever `<name>-provider-url` points at, and a local server will log it. A
+server that checks no key still needs one; any non-empty value does. Writing a
+key to config (via `config set` or the first-run prompt) prints a one-time
+plaintext-storage warning; using it afterward is silent. `config list` masks
+every api-key (e.g. `sk_ant...cdef`); use `config get <name>-api-key` for the
+full value.
 
 **Diagnostic logging:** off by default. Set `trace-file` to a path
 (`tapto-code config set trace-file ./tapto.log`) to append request/response
@@ -253,8 +297,9 @@ Plain `key = value` lines; `#` and `;` begin comments.
 
 ```
 # tapto-code
-api-key = sk_ant_xx23982932
-model = claude-sonnet-4-6
+provider = claude
+claude-api-key = sk_ant_xx23982932
+claude-model = claude-sonnet-4-6
 ```
 
 ## Part of TaptoMatic

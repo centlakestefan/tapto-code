@@ -70,11 +70,13 @@ void print_usage(const std::string& text);
 
 // --- Chat session header ---------------------------------------------------
 
-// Print the full startup banner: ASCII art logo, version, provider/model,
-// and slash-command hints — all in one styled block.
+// Print the full startup banner: ASCII art logo, version, provider/model/URL,
+// and slash-command hints — all in one styled block. `provider` is the resolved
+// provider as shown to the user, e.g. "claude" or "gemma4 (openai)".
 void print_banner(const std::string& version,
                   const std::string& provider,
-                  const std::string& model);
+                  const std::string& model,
+                  const std::string& url);
 
 // Legacy thin wrappers kept for any callers that haven't migrated yet.
 void print_chat_header(const std::string& provider,

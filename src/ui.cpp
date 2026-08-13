@@ -739,7 +739,8 @@ void print_usage(const std::string& text) {
 
 void print_banner(const std::string& version,
                   const std::string& provider,
-                  const std::string& model) {
+                  const std::string& model,
+                  const std::string& url) {
     // ASCII art — kept to 58 columns so it fits inside an 80-col terminal
     // even after the left margin added by most terminal emulators.
     //
@@ -778,10 +779,12 @@ void print_banner(const std::string& version,
         << kReset
         << "\n";
 
-    // Info line: version + provider/model
+    // Info line: version + provider/model, then the endpoint on its own line so
+    // a long URL doesn't wrap the rest of it.
     std::cout << kDim << "  v" << version
               << "  │  " << provider << "  │  " << model
               << kReset << "\n";
+    std::cout << kDim << "  " << url << kReset << "\n";
 
     // Hints
     std::cout << kDim
