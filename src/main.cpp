@@ -4,6 +4,7 @@
 #include "tapto/commands.h"
 #include "tapto/config.h"
 #include "tapto/paths.h"
+#include "tapto/secret.h"
 #include "tapto/tools.h"
 
 #include "tapto/claude.h"
@@ -87,6 +88,11 @@ const char* kUsage =
     "and gemini work as names with no config at all. The unscoped model,\n"
     "provider-url and api-key apply only to the default provider, so a local\n"
     "endpoint's URL is never sent to a hosted one, or its key to a local one.\n"
+    "\n"
+    "An api-key may say where the key lives instead of holding it:\n"
+    "  env:ANTHROPIC_API_KEY        an environment variable\n"
+    "  cmd:pass show anthropic      first line of a command's output\n"
+    "  wincred:tapto/work-claude    Windows Credential Manager (cmdkey /generic:)\n"
     "\n"
     "Scope flags:\n"
     "  --system   machine-wide config\n"
@@ -215,10 +221,12 @@ int cmd_set(const Args& a) {
         ui::print_error(e.what());
         return 1;
     }
-    if (is_api_key_key(a.positional[1])) {
+    // A reference stores no secret, so it needs no warning — it is the remedy
+    // the warning points at.
+    if (is_api_key_key(a.positional[1]) && !is_secret_reference(a.positional[2])) {
         ui::print_warning(a.positional[1] + " stored in plaintext at " + path.string() +
-                          "; set the provider's API key env var (e.g. ANTHROPIC_API_KEY) "
-                          "to avoid storing it on disk");
+                          "; set the provider's API key env var (e.g. ANTHROPIC_API_KEY), "
+                          "or use env: / cmd: / wincred: to keep it out of the file");
     }
     return 0;
 }
@@ -276,8 +284,11 @@ std::string mask_secret(const std::string& v) {
     return v.substr(0, 6) + "..." + v.substr(v.size() - 4);
 }
 
+// A reference (env:/cmd:/wincred:) says where the key lives rather than being
+// it, so it is shown in full — masking it would hide the one part of the entry
+// worth reading.
 std::string list_value(const std::string& key, const std::string& value) {
-    return is_api_key_key(key) ? mask_secret(value) : value;
+    return (is_api_key_key(key) && !is_secret_reference(value)) ? mask_secret(value) : value;
 }
 
 int cmd_list(const Args& a) {
@@ -490,15 +501,24 @@ std::string provider_dialect(const std::string& name) {
 // `<name>-provider-url` points at, which for a local server means writing it
 // into somebody's log. The plaintext warning is emitted when the key is
 // written, not on use.
-std::string resolve_api_key(const std::string& name, const std::string& dialect) {
-    if (auto v = get_effective(name + "-api-key")) return *v;
-    if (auto v = env_value(api_key_env_var(dialect))) return *v;
+//
+// A configured value may name where the key lives — `env:`, `cmd:`, `wincred:`
+// — instead of being the key; see tapto/secret.h. The vendor environment
+// variable is a secret in its own right, never a reference, so it is taken
+// verbatim.
+Secret resolve_api_key(const std::string& name, const std::string& dialect) {
+    if (auto v = get_effective(name + "-api-key")) return resolve_secret(*v);
+    if (auto v = env_value(api_key_env_var(dialect))) {
+        Secret s;
+        s.value = *v;
+        return s;
+    }
     // The unscoped api-key belongs to the default provider only; otherwise one
     // vendor's key would be handed to another.
     if (auto def = default_provider_name(); def && *def == name) {
-        if (auto v = get_effective("api-key")) return *v;
+        if (auto v = get_effective("api-key")) return resolve_secret(*v);
     }
-    return "";
+    return Secret{};
 }
 
 // A provider block resolved into everything a chat session needs.
@@ -507,7 +527,7 @@ struct ResolvedProvider {
     std::string dialect; // claude | openai | gemini
     std::string url;
     std::string model;
-    std::string api_key; // empty if none is configured; the caller decides
+    Secret api_key;      // unresolved if none is configured; the caller decides
 };
 
 // Resolve a provider name (empty for the configured default). Prints its own
@@ -624,19 +644,30 @@ bool first_run_setup() {
 
     const std::string dialect = provider_dialect(name);
     const char* keyvar = api_key_env_var(dialect);
+    const Secret existing = resolve_api_key(name, dialect);
+    // A key that is configured but unreadable is a problem to report, not one to
+    // prompt over: writing a second key would leave the broken reference in place.
+    if (!existing.error.empty()) {
+        ui::print_error(existing.error);
+        return false;
+    }
     // Only prompt for a key if one isn't already available (env var included).
-    if (resolve_api_key(name, dialect).empty()) {
+    if (!existing.ok()) {
         ui::print_setup_apikey_prompt(keyvar);
         std::string line;
         if (!std::getline(std::cin, line)) return false;
         std::string key = trim(line);
         if (!key.empty()) {
             if (!set_global(name + "-api-key", key)) return false;
-            std::string warn = name + "-api-key stored in plaintext at " +
-                               config_path(Level::Global).string();
-            if (keyvar && *keyvar)
-                warn += "; set " + std::string(keyvar) + " to avoid storing it on disk";
-            ui::print_warning(warn);
+            // A reference (env:/cmd:/wincred:) is not a secret, so it earns no
+            // warning — storing one is the point of having them.
+            if (!is_secret_reference(key)) {
+                std::string warn = name + "-api-key stored in plaintext at " +
+                                   config_path(Level::Global).string();
+                if (keyvar && *keyvar)
+                    warn += "; set " + std::string(keyvar) + " to avoid storing it on disk";
+                ui::print_warning(warn);
+            }
         }
         // A blank entry means the user intends to use the environment variable.
     }
@@ -788,12 +819,19 @@ int cmd_chat(const std::string& requested_provider) {
     auto provider = resolve_provider(requested_provider); // prints its own errors
     if (!provider) return 2;
 
-    if (provider->api_key.empty() && may_prompt && !ran_setup) {
+    if (!provider->api_key.ok() && provider->api_key.error.empty() && may_prompt && !ran_setup) {
         if (!first_run_setup()) return 2;
         provider = resolve_provider(requested_provider);
         if (!provider) return 2;
     }
-    if (provider->api_key.empty()) {
+    // A key that is configured but couldn't be read is reported as itself. It
+    // must not fall through to the "none configured" path below, which would
+    // send the user off to set a key they have already set.
+    if (!provider->api_key.error.empty()) {
+        ui::print_error("provider '" + provider->name + "': " + provider->api_key.error);
+        return 2;
+    }
+    if (!provider->api_key.ok()) {
         std::string msg = "no API key for provider '" + provider->name + "'; set " +
                           api_key_env_var(provider->dialect) +
                           ", or run: tapto-code --global config set " + provider->name +
@@ -837,11 +875,11 @@ int cmd_chat(const std::string& requested_provider) {
     // never heard of, and what it means is whatever its -provider-type says.
     std::unique_ptr<AiBackend> client;
     if (provider->dialect == "claude") {
-        client = std::make_unique<ClaudeClient>(&ai_config, url, model, provider->api_key);
+        client = std::make_unique<ClaudeClient>(&ai_config, url, model, provider->api_key.value);
     } else if (provider->dialect == "openai") {
-        client = std::make_unique<OpenAIClient>(&ai_config, url, model, provider->api_key);
+        client = std::make_unique<OpenAIClient>(&ai_config, url, model, provider->api_key.value);
     } else {
-        client = std::make_unique<GeminiClient>(&ai_config, url, model, provider->api_key);
+        client = std::make_unique<GeminiClient>(&ai_config, url, model, provider->api_key.value);
     }
 
     client->start();

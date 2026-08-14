@@ -116,7 +116,7 @@ Chat config keys:
 | --------------- | -------- | --------------------------------------------------- |
 | `provider`      | yes      | `claude` — which provider block to use              |
 | `<name>-provider-type` | —  | `claude` / `openai` / `gemini` — the API to speak  |
-| `<name>-api-key` | yes     | — or the vendor's environment variable               |
+| `<name>-api-key` | yes     | — or the vendor's environment variable; may be an `env:` / `cmd:` / `wincred:` reference |
 | `<name>-provider-url` | no | claude: `https://api.anthropic.com`, openai: `https://api.openai.com`, gemini: `https://generativelanguage.googleapis.com` |
 | `<name>-model`  | no       | claude: `claude-sonnet-4-6`, openai: `gpt-4o`, gemini: `gemini-2.0-flash` |
 | `max-output-tokens` | no   | `16000` — raise it for long replies (large tables, reports) |
@@ -166,11 +166,47 @@ variable — `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` — then 
 unscoped `api-key` for the default provider. The block's own key wins on purpose:
 an environment variable taking precedence would send a real vendor key to
 whatever `<name>-provider-url` points at, and a local server will log it. A
-server that checks no key still needs one; any non-empty value does. Writing a
-key to config (via `config set` or the first-run prompt) prints a one-time
-plaintext-storage warning; using it afterward is silent. `config list` masks
-every api-key (e.g. `sk_ant...cdef`); use `config get <name>-api-key` for the
-full value.
+server that checks no key still needs one; any non-empty value does.
+
+### Keeping keys out of the config file
+
+An `api-key` value may say **where** the key lives instead of holding it:
+
+| Value | Reads from |
+| --- | --- |
+| `sk-ant-...` | the value itself |
+| `env:ANTHROPIC_API_KEY` | an environment variable |
+| `cmd:pass show anthropic` | the first line of a command's output |
+| `wincred:tapto/work-claude` | a Windows Credential Manager generic credential |
+
+```sh
+tapto-code --global config set work-api-key wincred:tapto/work-claude
+cmdkey /generic:tapto/work-claude /user:tapto /pass    # prompts for the key
+```
+
+`cmd:` is the general escape hatch — `pass`, `gopass`, `op read op://vault/item`,
+`gcloud`, `security find-generic-password`, or a git credential helper all work,
+and the store keeps saying which provider uses which secret. The command's stderr
+and stdin are left attached to the terminal, so a helper that needs to unlock a
+vault can prompt.
+
+`wincred:` reads a **generic** credential, which Windows encrypts under your user
+account with DPAPI. That protects the key from a config file that gets backed up,
+synced, screen-shared or pasted into an issue — it does *not* protect it from
+code running as you, which can read the credential without a prompt. It is the
+same trade git's `wincred` credential helper makes. Both blob encodings are
+accepted, so credentials written by `cmdkey` or by git's helper are read
+correctly.
+
+A reference that fails — variable unset, command non-zero, credential missing —
+is a hard error naming the problem. It never falls through to the next source,
+because that is how one endpoint ends up being handed another one's key.
+
+Writing a literal key to config (via `config set` or the first-run prompt) prints
+a one-time plaintext-storage warning; a reference does not, since storing one is
+the remedy. `config list` masks literal keys (e.g. `sk_ant...cdef`) but shows
+references in full, as they name a location rather than a secret; use
+`config get <name>-api-key` for the raw value.
 
 **Diagnostic logging:** off by default. Set `trace-file` to a path
 (`tapto-code config set trace-file ./tapto.log`) to append request/response

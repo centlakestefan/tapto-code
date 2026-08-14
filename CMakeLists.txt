@@ -41,6 +41,7 @@ add_executable(tapto-code
   src/config.cpp
   src/commands.cpp
   src/paths.cpp
+  src/secret.cpp
   src/tools.cpp
   src/ui.cpp
   src/claude.cpp
@@ -58,6 +59,13 @@ target_link_libraries(tapto-code PRIVATE
   OpenSSL::SSL
   OpenSSL::Crypto
 )
+
+# CredReadW / CredFree, for reading API keys out of Windows Credential Manager.
+# Most Windows toolchains link advapi32 by default; say so explicitly so the
+# build doesn't depend on that.
+if(WIN32)
+  target_link_libraries(tapto-code PRIVATE advapi32)
+endif()
 
 if(MSVC)
   target_compile_options(tapto-code PRIVATE /W4 /EHsc /utf-8)
