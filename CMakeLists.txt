@@ -74,3 +74,25 @@ else()
 endif()
 
 install(TARGETS tapto-code RUNTIME DESTINATION bin)
+
+# --- Tests ------------------------------------------------------------------
+# Plain executables with assertions of their own, so `ctest` needs no test
+# framework fetched or installed. Run with: ctest --test-dir build --output-on-failure
+enable_testing()
+
+add_executable(test-edits
+  tests/test_edits.cpp
+  src/tools.cpp
+  src/commands.cpp
+  src/config.cpp
+  src/paths.cpp
+)
+target_include_directories(test-edits PRIVATE include)
+target_link_libraries(test-edits PRIVATE nlohmann_json::nlohmann_json)
+if(MSVC)
+  target_compile_options(test-edits PRIVATE /W4 /EHsc /utf-8)
+else()
+  target_compile_options(test-edits PRIVATE -Wall -Wextra)
+endif()
+
+add_test(NAME edits COMMAND test-edits)

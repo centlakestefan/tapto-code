@@ -41,6 +41,13 @@ cmake --build build --config Release
 The binary is produced at `build/tapto-code` (Linux) or
 `build/Release/tapto-code.exe` (Windows / MSVC).
 
+Tests are plain executables with assertions of their own — nothing to fetch or
+install:
+
+```sh
+ctest --test-dir build --output-on-failure
+```
+
 ### Dependencies
 
 Fetched automatically at configure time via CMake `FetchContent` (needs git +
@@ -232,6 +239,18 @@ directory tapto-code is launched from):
 
 These edit real files on disk. `create` refuses to overwrite an existing file;
 `str_replace` requires the target string to be unique.
+
+**Line endings:** files are read and written byte-exact, and `view` shows the
+model each line with its CR stripped — so the model composes edits in LF terms
+whatever the file uses. Matching therefore treats a line ending as a line
+ending: an `old_str` written with `\n` matches CRLF text, and vice versa. Text
+written back takes the ending of the text it replaces, so an edit to a Windows
+file stays CRLF and a one-line replacement that becomes several lines uses the
+file's convention for the new ones. `insert` splices at a byte offset rather
+than rebuilding the file, so a file with mixed endings — which a long Windows
+history produces — keeps every ending the edit didn't touch. Two occurrences
+that differ only in their line endings count as ambiguous and are refused,
+since they are indistinguishable in what the model was shown.
 
 **Sandbox:** the file tools (`str_replace_based_edit_tool`, `find_files`) are
 confined to the directory tapto-code was started in and its subdirectories. Paths

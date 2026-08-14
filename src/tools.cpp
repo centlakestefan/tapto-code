@@ -52,13 +52,110 @@ std::vector<std::string> split_lines(const std::string& text) {
     return lines;
 }
 
-std::string join_lines(const std::vector<std::string>& lines) {
+// --- line endings ---------------------------------------------------------
+//
+// Files are read and written byte-exact, and `view` renders each line with its
+// CR stripped. The model therefore composes edits in LF terms while a file
+// checked out on Windows holds CRLF, so an edit has to treat a line ending as a
+// line ending rather than as two particular bytes — otherwise every multi-line
+// str_replace on such a file fails to match.
+//
+// Files with a long Windows history can be mixed, which is why matching is a
+// per-character scan rather than normalise-then-compare: every byte outside the
+// edited span keeps whatever ending it already had.
+
+// Length of the line ending at s[i], or 0 if there isn't one there. A lone CR
+// is deliberately not an ending: in a file that is otherwise LF or CRLF it is
+// far more likely to be data than a line break.
+size_t eol_len(const std::string& s, size_t i) {
+    if (i >= s.size()) return 0;
+    if (s[i] == '\r' && i + 1 < s.size() && s[i + 1] == '\n') return 2;
+    if (s[i] == '\n') return 1;
+    return 0;
+}
+
+// Match `needle` against `content` starting at `at`, with any line ending
+// matching any other. Returns the end offset of the match (which may differ
+// from at + needle.size(), since the endings can be of different lengths), or
+// npos if it doesn't match here.
+size_t match_at(const std::string& content, const std::string& needle, size_t at) {
+    size_t i = at, j = 0;
+    while (j < needle.size()) {
+        if (const size_t n = eol_len(needle, j)) {
+            const size_t c = eol_len(content, i);
+            if (c == 0) return std::string::npos;
+            i += c;
+            j += n;
+        } else {
+            if (i >= content.size() || content[i] != needle[j]) return std::string::npos;
+            ++i;
+            ++j;
+        }
+    }
+    return i;
+}
+
+// Every non-overlapping match of `needle`, comparing line endings loosely.
+std::vector<std::pair<size_t, size_t>> find_all_loose(const std::string& content,
+                                                      const std::string& needle) {
+    std::vector<std::pair<size_t, size_t>> hits;
+    if (needle.empty()) return hits;
+    for (size_t i = 0; i < content.size();) {
+        const size_t end = match_at(content, needle, i);
+        if (end == std::string::npos) {
+            ++i;
+        } else {
+            hits.push_back({i, end});
+            i = (end > i) ? end : i + 1;
+        }
+    }
+    return hits;
+}
+
+// The ending style a stretch of text uses. Text with no ending in it at all
+// inherits `fallback`, which is how a single-line replacement in a CRLF file
+// still gets CRLF when it turns into several lines.
+std::string eol_style(const std::string& s, const std::string& fallback) {
+    size_t crlf = 0, lf = 0;
+    for (size_t i = 0; i < s.size();) {
+        const size_t n = eol_len(s, i);
+        if (n == 2) { ++crlf; i += 2; }
+        else if (n == 1) { ++lf; ++i; }
+        else ++i;
+    }
+    if (crlf == 0 && lf == 0) return fallback;
+    return crlf >= lf ? "\r\n" : "\n";
+}
+
+// Rewrite every line ending in `text` as `eol`.
+std::string with_eol(const std::string& text, const std::string& eol) {
     std::string out;
-    for (size_t i = 0; i < lines.size(); ++i) {
-        if (i) out += '\n';
-        out += lines[i];
+    out.reserve(text.size() + text.size() / 16);
+    for (size_t i = 0; i < text.size();) {
+        if (const size_t n = eol_len(text, i)) {
+            out += eol;
+            i += n;
+        } else {
+            out += text[i++];
+        }
     }
     return out;
+}
+
+// Byte offset where line `line` starts (0-based, counting line endings). Past
+// the last line this is the end of the content, so inserting there appends.
+size_t line_start_offset(const std::string& s, int line) {
+    size_t off = 0;
+    int seen = 0;
+    while (seen < line && off < s.size()) {
+        if (const size_t n = eol_len(s, off)) {
+            off += n;
+            ++seen;
+        } else {
+            ++off;
+        }
+    }
+    return off;
 }
 
 bool read_file(const fs::path& path, std::string& out) {
@@ -269,20 +366,28 @@ std::string execute_text_editor(Context& /*context*/, const json& in) {
                 return "ERROR: old_str cannot be empty. Use 'insert' to add new content.";
             }
 
-            size_t pos = content.find(old_str);
-            if (pos == std::string::npos) return "ERROR: String not found: " + old_str;
-
-            size_t count = 0, scan = 0;
-            while ((scan = content.find(old_str, scan)) != std::string::npos) {
-                ++count;
-                scan += old_str.length();
-            }
-            if (count > 1) {
-                return "ERROR: Multiple occurrences found (" + std::to_string(count) +
+            // Matching compares line endings as line endings throughout, not
+            // just as a fallback when the byte-exact search misses. old_str is
+            // composed from `view` output, which strips CR, so on a Windows file
+            // a byte-exact search would miss every multi-line old_str — and,
+            // just as important, two places that differ only in their endings
+            // are indistinguishable to the model that asked for "the unique
+            // occurrence", so both have to count towards ambiguity.
+            const auto hits = find_all_loose(content, old_str);
+            if (hits.empty()) return "ERROR: String not found: " + old_str;
+            if (hits.size() > 1) {
+                return "ERROR: Multiple occurrences found (" + std::to_string(hits.size()) +
                        "). Please provide a unique string.";
             }
+            const size_t begin = hits[0].first;
+            const size_t end = hits[0].second;
 
-            content.replace(pos, old_str.length(), new_str);
+            // Write the replacement in whatever ending the text it replaces
+            // used, so an edit inside a CRLF file — or inside the CRLF half of a
+            // mixed one — doesn't leave an LF line behind it.
+            const std::string style =
+                eol_style(content.substr(begin, end - begin), eol_style(content, "\n"));
+            content.replace(begin, end - begin, with_eol(new_str, style));
             if (!write_file(path, content)) return "ERROR: Failed to write " + path.string();
             return "OK";
         }
@@ -308,8 +413,22 @@ std::string execute_text_editor(Context& /*context*/, const json& in) {
             if (insert_line < 0 || insert_line > static_cast<int>(lines.size())) {
                 return "ERROR: Invalid insert_line";
             }
-            lines.insert(lines.begin() + insert_line, new_str);
-            if (!write_file(path, join_lines(lines))) return "ERROR: Failed to write " + path.string();
+
+            // Splice at a byte offset rather than rebuilding the file from split
+            // lines: rebuilding rejoins with one ending and so rewrites every
+            // line in the file, which turns a one-line insert into a whole-file
+            // diff and normalises a mixed file.
+            const std::string eol = eol_style(content, "\n");
+            const size_t offset = line_start_offset(content, insert_line);
+            const std::string piece = with_eol(new_str, eol);
+            if (offset == content.size() && !content.empty() && content.back() != '\n') {
+                // Appending to a file that doesn't end in a newline: start a new
+                // line for the insert, and leave the file without one as before.
+                content += eol + piece;
+            } else {
+                content.insert(offset, piece + eol);
+            }
+            if (!write_file(path, content)) return "ERROR: Failed to write " + path.string();
             return "Insertion successful at line " + std::to_string(insert_line);
         }
 
