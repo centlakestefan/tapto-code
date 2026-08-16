@@ -11,6 +11,9 @@ CMakeFiles/
 cmake_install.cmake
 Makefile
 *.cmake
+# ...but the project's own cmake modules are source, and *.cmake above would
+# swallow them without a word.
+!cmake/*.cmake
 
 # Editor / IDE
 .vs/

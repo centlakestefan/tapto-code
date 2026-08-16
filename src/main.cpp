@@ -13,6 +13,7 @@
 #include "tapto/aiconfig.h"
 #include "tapto/log.h"
 #include "tapto/ui.h"
+#include "tapto/version.h"
 
 #include <nlohmann/json.hpp>
 
@@ -26,10 +27,6 @@
 #include <vector>
 
 using namespace tapto;
-
-#ifndef TAPTO_CODE_VERSION
-#define TAPTO_CODE_VERSION "0.1.0"
-#endif
 
 namespace {
 
@@ -314,6 +311,11 @@ int cmd_version() {
     nlohmann::json info;
     info["name"] = "tapto-code";
     info["version"] = TAPTO_CODE_VERSION;
+    // The commit the binary was built from, which the version alone does not
+    // pin down: a release is tagged once and built many times, and "-dirty"
+    // marks one that had uncommitted changes and cannot be reproduced from the
+    // hash.
+    info["commit"] = TAPTO_CODE_COMMIT;
     ui::print_line(info.dump(2));
     return 0;
 }
@@ -803,7 +805,13 @@ bool read_user_input(std::string& out) {
 // `requested_provider` is the --provider argument, empty for the configured
 // default.
 int cmd_chat(const std::string& requested_provider) {
-    if (auto tf = get_effective("trace-file")) mclog_set_file(*tf);
+    if (auto tf = get_effective("trace-file")) {
+        mclog_set_file(*tf);
+        // First line of every trace: which build wrote what follows. The file
+        // is appended to across runs, so this also separates one from the next.
+        mclog(std::string("tapto-code ") + TAPTO_CODE_VERSION + " (" +
+              TAPTO_CODE_COMMIT + ")\n");
+    }
 
     // Essentials: a provider and an API key for it. Prompt for whatever is
     // missing — but only for the default provider: a name given on the command

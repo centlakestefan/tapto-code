@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(tapto-code VERSION 0.1.0 LANGUAGES CXX)
+project(tapto-code VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -35,6 +35,32 @@ FetchContent_Declare(httplib
 
 FetchContent_MakeAvailable(nlohmann_json httplib)
 
+# --- Version stamp ----------------------------------------------------------
+# Puts the version and the originating commit into the binary, so `version` and
+# the first line of every trace name the build that produced them. Regenerated
+# on each build, not at configure time; see cmake/GitVersion.cmake.
+set(TAPTO_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated")
+set(TAPTO_VERSION_HEADER "${TAPTO_GENERATED_DIR}/tapto/version.h")
+
+set(TAPTO_VERSION_ARGS
+  -DSRC_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+  -DIN_FILE=${CMAKE_CURRENT_SOURCE_DIR}/cmake/version.h.in
+  -DOUT_FILE=${TAPTO_VERSION_HEADER}
+  -DPROJECT_VERSION=${PROJECT_VERSION}
+  -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/GitVersion.cmake
+)
+
+# Once at configure time as well, so the header exists before anything asks an
+# IDE or a generator to parse the sources that include it.
+execute_process(COMMAND ${CMAKE_COMMAND} ${TAPTO_VERSION_ARGS})
+
+add_custom_target(tapto_version ALL
+  COMMAND ${CMAKE_COMMAND} ${TAPTO_VERSION_ARGS}
+  BYPRODUCTS ${TAPTO_VERSION_HEADER}
+  COMMENT "Stamping version ${PROJECT_VERSION}"
+  VERBATIM
+)
+
 # --- Target -----------------------------------------------------------------
 add_executable(tapto-code
   src/main.cpp
@@ -48,9 +74,13 @@ add_executable(tapto-code
   src/openai.cpp
   src/gemini.cpp
 )
-target_include_directories(tapto-code PRIVATE include)
+target_include_directories(tapto-code PRIVATE include "${TAPTO_GENERATED_DIR}")
+add_dependencies(tapto-code tapto_version)
+# TAPTO_VERSION was defined here and read nowhere: main.cpp had moved on to
+# TAPTO_CODE_VERSION with a hardcoded fallback, so the version was whatever the
+# source said and never what the build said. It comes from the generated header
+# now, which is the one place that can be right.
 target_compile_definitions(tapto-code PRIVATE
-  TAPTO_VERSION="${PROJECT_VERSION}"
   CPPHTTPLIB_OPENSSL_SUPPORT
 )
 target_link_libraries(tapto-code PRIVATE
