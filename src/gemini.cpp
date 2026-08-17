@@ -11,6 +11,7 @@
 #include <string>
 #include <thread>
 
+#include "tapto/encoding.h"
 #include "tapto/log.h"
 #include "tapto/ui.h"
 
@@ -379,7 +380,7 @@ std::string GeminiClient::chat(Context& context, const std::string& user_message
             auto it = m_tool_registry.find(tool_name);
             if (it != m_tool_registry.end()) {
                 try {
-                    result = it->second(args);
+                    result = tapto::sanitizeToolResult(it->second(args), tool_name);
                 }
                 catch (const std::exception& e) {
                     result = "ERROR: Tool execution failed: " + std::string(e.what());

@@ -11,60 +11,12 @@
 #include <string>
 #include <thread>
 
+#include "tapto/encoding.h"
 #include "tapto/log.h"
 #include "tapto/ui.h"
 
 using json = nlohmann::json;
 namespace ui = tapto::ui;
-
-namespace {
-
-/// <summary>
-/// Replace any invalid UTF-8 byte sequences with U+FFFD. Tool results are
-/// supposed to be valid UTF-8, but a stray non-UTF-8 byte would make the next
-/// json::dump() of the conversation history throw and abort the turn. This is a
-/// safety net only — the offending tool should be fixed at its source.
-/// </summary>
-std::string sanitizeUtf8(const std::string& in) {
-    std::string out;
-    out.reserve(in.size());
-    const size_t n = in.size();
-    auto is_cont = [&](size_t k) {
-        return k < n && (static_cast<unsigned char>(in[k]) & 0xC0) == 0x80;
-    };
-
-    size_t i = 0;
-    while (i < n) {
-        unsigned char c = static_cast<unsigned char>(in[i]);
-        if (c < 0x80) {
-            out.push_back(in[i]);
-            i += 1;
-        } else if ((c & 0xE0) == 0xC0 && c >= 0xC2 && is_cont(i + 1)) {
-            out.append(in, i, 2);
-            i += 2;
-        } else if ((c & 0xF0) == 0xE0 && is_cont(i + 1) && is_cont(i + 2)) {
-            out.append(in, i, 3);
-            i += 3;
-        } else if ((c & 0xF8) == 0xF0 && c <= 0xF4 && is_cont(i + 1) && is_cont(i + 2) && is_cont(i + 3)) {
-            out.append(in, i, 4);
-            i += 4;
-        } else {
-            out += "\xEF\xBF\xBD"; // U+FFFD
-            i += 1;
-        }
-    }
-    return out;
-}
-
-std::string sanitizeToolResult(const std::string& result, const std::string& tool_name) {
-    std::string clean = sanitizeUtf8(result);
-    if (clean.size() != result.size()) {
-        mclog("WARN: tool '" + tool_name + "' returned non-UTF-8 bytes; sanitizing with U+FFFD\n");
-    }
-    return clean;
-}
-
-} // namespace
 
 ClaudeClient::ClaudeClient(const AiConfig* config, const std::string& url, const std::string& model, const std::string& apiKey)
     : m_config(config), m_model(model), m_apiKeyRef(apiKey) {
@@ -473,7 +425,7 @@ std::string ClaudeClient::chat(Context& context, const std::string& user_message
                 tool_results.push_back({
                     {"type", "tool_result"},
                     {"tool_use_id", tool_id},
-                    {"content", sanitizeToolResult(result, tool_name)}
+                    {"content", tapto::sanitizeToolResult(result, tool_name)}
                     });
             }
         }

@@ -70,6 +70,7 @@ add_executable(tapto-code
   src/secret.cpp
   src/tools.cpp
   src/ui.cpp
+  src/encoding.cpp
   src/claude.cpp
   src/openai.cpp
   src/gemini.cpp
