@@ -788,7 +788,7 @@ void print_banner(const std::string& version,
 
     // Hints
     std::cout << kDim
-              << "  /clear  /list-commands  /add-command <name> <cmd>  /help  /exit"
+              << "  /clear  /compact  /list-commands  /add-command <name> <cmd>  /help  /exit"
               << kReset << "\n\n";
 }
 
@@ -805,7 +805,7 @@ void print_chat_header(const std::string& provider,
 }
 
 void print_chat_hints() {
-    std::cout << "Slash commands: /clear, /list-commands, "
+    std::cout << "Slash commands: /clear, /compact, /list-commands, "
                  "/add-command <name> <command...>, /exit\n";
 }
 
@@ -813,6 +813,7 @@ void print_help(const std::vector<std::string>& tool_names) {
     std::cout << "\n"
               << kBold << "  Slash commands\n" << kReset
               << "    /clear                        clear conversation history\n"
+              << "    /compact [focus]              summarize and restart from the summary\n"
               << "    /list-commands                list allow-listed shell commands\n"
               << "    /add-command <name> <cmd>     add a new allow-listed command\n"
               << "    /help                         show this help\n"

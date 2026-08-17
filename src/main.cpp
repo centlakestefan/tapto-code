@@ -923,6 +923,43 @@ int cmd_chat(const std::string& requested_provider) {
             continue;
         }
 
+        // Compact the conversation: ask the model to summarize the discussion
+        // so far, then restart from that summary. Optional focus hint:
+        //   /compact keep the CMake changes in mind
+        if (line.rfind("/compact", 0) == 0) {
+            if (!client->hasHistory()) {
+                ui::print_line("(nothing to compact — the conversation is empty)");
+                continue;
+            }
+            std::istringstream ciss(line);
+            std::string ccmd, focus;
+            ciss >> ccmd;
+            std::getline(ciss, focus);
+            size_t cfirst = focus.find_first_not_of(" \t");
+            focus = (cfirst == std::string::npos) ? std::string() : focus.substr(cfirst);
+
+            // Tool-free context so the model summarizes instead of editing files.
+            Context summarize_ctx;
+            std::string prompt =
+                "Summarize the entire conversation so far as a compact, structured note: "
+                "the user's goals, decisions made, files read or modified, and the current "
+                "state of any in-progress task. Reply with the summary only. " +
+                (focus.empty() ? std::string() : "Emphasize: " + focus);
+            std::string summary;
+            try {
+                ui::print_line("(summarizing conversation…)");
+                summary = client->chat(summarize_ctx, prompt);
+            } catch (const std::exception& e) {
+                // History is untouched on failure — the summary is requested
+                // within the live conversation and only replaced on success.
+                ui::print_error(e.what());
+                continue;
+            }
+            client->beginWithSummary(summary);
+            ui::print_line("(conversation compacted)");
+            continue;
+        }
+
         // In-session command management. Newly added commands are immediately
         // runnable by the agent (run_command reads the store on each call).
         if (line == "/list-commands") {

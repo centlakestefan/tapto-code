@@ -35,4 +35,9 @@ public:
     virtual bool hasHistory() const = 0;
     virtual void loadHistory(const nlohmann::json& history) = 0;
     virtual nlohmann::json getHistory() const = 0;
+
+    // Replace the conversation with a fresh one whose first user turn carries
+    // a summary of the discussion up to this point (used by the /compact
+    // command). Providers must format the seed message in their native shape.
+    virtual void beginWithSummary(const std::string& summaryText) = 0;
 };

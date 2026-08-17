@@ -78,4 +78,7 @@ public:
     bool hasHistory() const override;
     void loadHistory(const nlohmann::json& history) override;
     nlohmann::json getHistory() const override;
+    // Seed a fresh conversation with a summary of the previous discussion (/compact).
+    // Gemini messages use `parts` (not `content`), hence the dedicated method.
+    void beginWithSummary(const std::string& summaryText) override;
 };

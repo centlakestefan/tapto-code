@@ -512,6 +512,16 @@ json ClaudeClient::getHistory() const {
     return m_conversation_history;
 }
 
+/// <summary>Starts a new conversation seeded with a summary of the previous one (/compact).</summary>
+void ClaudeClient::beginWithSummary(const std::string& summaryText) {
+    m_conversation_history = json::array();
+    m_conversation_history.push_back({
+        {"role", "user"},
+        {"content", "(The conversation prior to this point has been summarized for context):\n" + summaryText}
+    });
+    mclog("Started conversation seeded with summary of previous discussion");
+}
+
 /// <summary>Sets the model for Claude client.</summary>
 void ClaudeClient::setModel(const std::string& model) {
     m_model = model;
