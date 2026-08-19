@@ -70,7 +70,8 @@ const char* kUsage =
     "\n"
     "Chat config keys: provider (which provider block to use), max-output-tokens\n"
     "  (optional), max-tool-iterations (optional, default 200), print-cot\n"
-    "  (optional, default true), system-prompt, trace-file\n"
+    "  (optional, default true), system-prompt, trace-file, and per provider\n"
+    "  <name>-reasoning-effort (openai dialect only: low, medium, high, ...)\n"
     "\n"
     "A provider is a named block of keys, so several backends -- including two\n"
     "local servers speaking the same API -- coexist in one config store:\n"
@@ -148,8 +149,9 @@ bool has_suffix(const std::string& key, const std::string& suffix) {
            key.compare(key.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 
-// The four keys a provider block owns, each written as `<name>-<key>`.
-const char* kProviderBlockKeys[] = {"provider-type", "api-key", "provider-url", "model"};
+// The keys a provider block owns, each written as `<name>-<key>`.
+const char* kProviderBlockKeys[] = {"provider-type", "api-key", "provider-url", "model",
+                                    "reasoning-effort"};
 
 // A provider name has to survive a round trip through the `key = value` config
 // format, so it is limited to characters that can't be mistaken for syntax.
@@ -176,6 +178,7 @@ bool is_supported_config_key(const std::string& key) {
     static const char* kKeys[] = {
         "provider", "provider-type", "api-key", "provider-url", "model",
         "max-output-tokens", "max-tool-iterations", "system-prompt", "trace-file", "print-cot",
+        "reasoning-effort",
     };
     for (const char* k : kKeys) {
         if (key == k) return true;
@@ -190,7 +193,7 @@ const char* kSupportedKeysHelp =
     "provider, provider-url, model, api-key, "
     "max-output-tokens, max-tool-iterations, system-prompt, trace-file, print-cot, "
     "and per provider <name>-provider-type, <name>-provider-url, <name>-model, "
-    "<name>-api-key";
+    "<name>-api-key, <name>-reasoning-effort";
 
 // True for the unscoped api-key and for any provider block's own key, so both
 // are masked when listed and both warn about plaintext storage when written.
@@ -529,6 +532,7 @@ struct ResolvedProvider {
     std::string dialect; // claude | openai | gemini
     std::string url;
     std::string model;
+    std::string reasoning_effort; // empty when unset; openai dialect only
     Secret api_key;      // unresolved if none is configured; the caller decides
 };
 
@@ -572,6 +576,14 @@ std::optional<ResolvedProvider> resolve_provider(const std::string& requested) {
 
     p.url = scoped("provider-url").value_or(default_url(p.dialect));
     p.model = scoped("model").value_or(default_model(p.dialect));
+    // The openai dialect is the only one that sends this. On a block speaking
+    // another dialect it is a mistake worth reporting, not a silent no-op.
+    p.reasoning_effort = scoped("reasoning-effort").value_or("");
+    if (!p.reasoning_effort.empty() && p.dialect != "openai") {
+        ui::print_warning("'" + p.name + "-reasoning-effort' is ignored: only the "
+                          "openai dialect sends it");
+        p.reasoning_effort.clear();
+    }
     p.api_key = resolve_api_key(p.name, p.dialect);
     return p;
 }
@@ -872,6 +884,7 @@ int cmd_chat(const std::string& requested_provider) {
             ui::print_warning("invalid max-tool-iterations '" + *v + "', using default");
         }
     }
+    ai_config.setOpenaiReasoningEffort(provider->reasoning_effort);
     if (auto v = get_effective("print-cot")) {
         // Default is on; only "false"/"0"/"off"/"no" (case-insensitive) disable it.
         std::string s = *v;

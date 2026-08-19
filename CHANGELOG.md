@@ -31,6 +31,12 @@ carries everything else.
 
 ## [Unreleased]
 
+### Added
+
+- `<name>-reasoning-effort` config key: the openai dialect sends it as
+  `reasoning_effort` on every request, for gpt-5/o-series and for
+  OpenAI-compatible servers that accept the same field.
+
 ## [0.2.0] — 2026-08-14
 
 ### Added
