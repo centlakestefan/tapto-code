@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "cancel.h"
 #include "tool_registry.h"
 
 // Minimal run context handed to an AI backend during a chat: the tools the
@@ -18,6 +19,10 @@
 class Context {
 public:
     std::vector<ToolSpec> tools;
+
+    // Optional cancellation token: when the user presses ESC the watcher thread
+    // sets this flag, and the model's tool loop checks it to stop early.
+    const CancellationToken* cancel = nullptr;
 
     bool has(const std::string& key) const { return m_store.count(key) > 0; }
     void remove(const std::string& key) { m_store.erase(key); }

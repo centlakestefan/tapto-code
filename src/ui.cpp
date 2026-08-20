@@ -788,7 +788,7 @@ void print_banner(const std::string& version,
 
     // Hints
     std::cout << kDim
-              << "  /clear  /compact  /list-commands  /add-command <name> <cmd>  /help  /exit"
+              << "  ESC to interrupt  │  /clear  /compact  /list-commands  /add-command <name> <cmd>  /help  /exit"
               << kReset << "\n\n";
 }
 
@@ -818,6 +818,9 @@ void print_help(const std::vector<std::string>& tool_names) {
               << "    /add-command <name> <cmd>     add a new allow-listed command\n"
               << "    /help                         show this help\n"
               << "    /exit                         quit\n"
+              << "\n"
+              << kBold << "  Key bindings\n" << kReset
+              << "    ESC                           interrupt the model while it is working\n"
               << "\n"
               << kBold << "  Active tools\n" << kReset;
     for (const auto& t : tool_names)

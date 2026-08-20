@@ -324,6 +324,9 @@ std::string GeminiClient::chat(Context& context, const std::string& user_message
 
     // Tool loop: keep going while the model emits functionCall parts.
     while (true) {
+        // Check for user interruption (ESC key).
+        if (context.cancel && context.cancel->check()) break;
+
         // Gather text and functionCall parts from the latest model message.
         bool has_text = false;
         json tool_calls = json::array();
@@ -413,6 +416,9 @@ std::string GeminiClient::chat(Context& context, const std::string& user_message
             {"parts", tool_response_parts}
         });
 
+        // Check for user interruption before the (potentially slow) API call.
+        if (context.cancel && context.cancel->check()) break;
+
         ui::set_status("Thinking...", iteration, max_iterations);
         response = call_gemini("", tool_schemas, m_conversation_history);
         mclog("Gemini API response body: " + response.dump(2) + "\n");
@@ -437,9 +443,13 @@ std::string GeminiClient::chat(Context& context, const std::string& user_message
     if (iteration >= max_iterations) {
         mclog("Warning: Reached maximum iterations\n");
     }
+    bool user_cancelled = (context.cancel && context.cancel->cancelled());
+    if (user_cancelled) {
+        mclog("Cancelled by user (ESC)\n");
+    }
 
-    // If we stopped with unanswered function calls (iteration cap), answer them
-    // so the conversation stays valid on the next turn.
+    // If we stopped with unanswered function calls (iteration cap or user
+    // cancel), answer them so the conversation stays valid on the next turn.
     {
         json pending = json::array();
         for (const auto& part : model_response_message["parts"]) {
@@ -447,7 +457,9 @@ std::string GeminiClient::chat(Context& context, const std::string& user_message
                 pending.push_back({
                     {"functionResponse", {
                         {"name", part["functionCall"].value("name", std::string())},
-                        {"response", {{"content", "Tool not run: iteration limit reached."}}}
+                        {"response", {{"content", user_cancelled
+                            ? "Tool not run: interrupted by user."
+                            : "Tool not run: iteration limit reached."}}}
                     }}
                 });
             }

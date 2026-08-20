@@ -11,6 +11,7 @@
 #include "tapto/openai.h"
 #include "tapto/gemini.h"
 #include "tapto/aiconfig.h"
+#include "tapto/cancel.h"
 #include "tapto/log.h"
 #include "tapto/ui.h"
 #include "tapto/version.h"
@@ -25,6 +26,14 @@
 #include <sstream>
 #include <string>
 #include <vector>
+
+#ifdef _WIN32
+#include <conio.h>
+#else
+#include <termios.h>
+#include <unistd.h>
+#include <sys/select.h>
+#endif
 
 using namespace tapto;
 
@@ -814,6 +823,86 @@ bool read_user_input(std::string& out) {
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// ESC interrupt
+//
+// While the model is running the main thread is free only at checkpoints
+// (before each API call / tool execution), so the interrupt poll happens
+// there, inline — no background thread needed. poll_esc() is installed on
+// the CancellationToken via setCheckFn and called by the tool loop's check()
+// at every checkpoint.
+//
+// Windows: _kbhit() / _getch() — non-blocking in cooked mode.
+// POSIX:   select() with a zero timeout + read() — requires raw mode, which
+//          is active for exactly the duration of a client->chat() call (see
+//          RawTerminal below); it must be off while read_user_input() runs,
+//          since that relies on cooked line mode and echo.
+// ---------------------------------------------------------------------------
+// RAII terminal guard: unbuffered, echo-off stdin for the ESC poll.
+struct RawTerminal {
+    RawTerminal() {
+#ifndef _WIN32
+        if (tcgetattr(STDIN_FILENO, &m_saved) != 0) return;
+        m_raw = m_saved;
+        m_raw.c_lflag &= ~(ICANON | ECHO);
+        m_raw.c_cc[VMIN]  = 0;
+        m_raw.c_cc[VTIME] = 0;
+        if (tcsetattr(STDIN_FILENO, TCSANOW, &m_raw) == 0)
+            m_active = true;
+#else
+        (void)this; // _kbhit works in cooked mode; nothing to do
+#endif
+    }
+    ~RawTerminal() {
+#ifndef _WIN32
+        if (m_active) tcsetattr(STDIN_FILENO, TCSANOW, &m_saved);
+#else
+        (void)this;
+#endif
+    }
+    RawTerminal(const RawTerminal&) = delete;
+    RawTerminal& operator=(const RawTerminal&) = delete;
+#ifndef _WIN32
+    termios m_saved{};
+    termios m_raw{};
+    bool    m_active{false};
+#else
+    int m_dummy;
+#endif
+};
+
+// Non-blocking poll for the interrupt key (ESC). Consumes and discards any
+// other pending input (arrows, repeats, ...) so the queue never sticks.
+bool poll_esc() {
+#ifdef _WIN32
+    bool esc = false;
+    while (_kbhit()) {
+        int c = _getch();
+        if (c == 0x1B) {
+            esc = true;
+        } else if (c == 0x00 || c == 0xE0) {
+            // Prefix for an extended key (arrows, F-keys): drop the
+            // follow-up byte so the queue doesn't hold a partial sequence.
+            if (_kbhit()) _getch();
+        }
+    }
+    return esc;
+#else
+    fd_set fds;
+    FD_ZERO(&fds);
+    FD_SET(STDIN_FILENO, &fds);
+    timeval tv { 0, 0 }; // zero timeout: strictly non-blocking
+    if (select(STDIN_FILENO + 1, &fds, nullptr, nullptr, &tv) <= 0)
+        return false;
+    unsigned char buf[256];
+    ssize_t n = read(STDIN_FILENO, buf, sizeof(buf));
+    if (n <= 0) return false; // EOF or error — nothing to drain now
+    for (ssize_t i = 0; i < n; ++i)
+        if (buf[i] == 0x1B) return true;
+    return false;
+#endif
+}
+
 // `requested_provider` is the --provider argument, empty for the configured
 // default.
 int cmd_chat(const std::string& requested_provider) {
@@ -909,6 +998,12 @@ int cmd_chat(const std::string& requested_provider) {
     // Register the file tools (editor + search) for this chat session.
     Context context;
     context.tools = builtin_tools();
+
+    // ESC-abort cancellation token (lives for the entire chat session). The
+    // poll is installed once and runs inline in this thread at each tool-loop
+    // checkpoint (no watcher thread).
+    CancellationToken cancel_token;
+    cancel_token.setCheckFn(poll_esc);
 
     // The resolved provider is printed, so a block wired to the wrong dialect or
     // URL shows up here rather than as malformed requests.
@@ -1022,11 +1117,31 @@ int cmd_chat(const std::string& requested_provider) {
         }
 
         ui::print_prompt_accepted();
-        try {
-            std::string reply = client->chat(context, line);
-            ui::print_reply(reply);
-        } catch (const std::exception& e) {
-            ui::print_error(e.what());
+
+        // Reset the cancellation state for this turn. The ESC poll runs in
+        // this thread at each tool-loop checkpoint (see CancellationToken).
+        cancel_token.reset(); // reset for this turn
+        context.cancel = &cancel_token;
+
+        {
+            // Raw/unbuffered stdin for the duration of the call so poll_esc()
+            // can read a single ESC byte without waiting for Enter (POSIX).
+            // Restored before the next prompt, which needs cooked mode.
+            RawTerminal raw;
+            try {
+                std::string reply = client->chat(context, line);
+                if (cancel_token.cancelled()) {
+                    ui::print_line("\x1b[33m<interrupted by user — conversation preserved, type a new instruction>\x1b[0m");
+                } else {
+                    ui::print_reply(reply);
+                }
+            } catch (const std::exception& e) {
+                if (cancel_token.cancelled()) {
+                    ui::print_line("\x1b[33m<interrupted by user — conversation preserved, type a new instruction>\x1b[0m");
+                } else {
+                    ui::print_error(e.what());
+                }
+            }
         }
     }
 #ifndef _WIN32

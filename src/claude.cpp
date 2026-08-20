@@ -377,6 +377,9 @@ std::string ClaudeClient::chat(Context& context, const std::string& user_message
     // block. Driving on presence (rather than stop_reason) means a turn cut off
     // by max_tokens that still carries a tool_use is handled, not orphaned.
     while (has_tool_use(response) && iteration < max_iterations) {
+        // Check for user interruption (ESC key).
+        if (context.cancel && context.cancel->check()) break;
+
         iteration++;
         mclog("=== Iteration " + std::to_string(iteration) + " ===\n");
 
@@ -436,6 +439,9 @@ std::string ClaudeClient::chat(Context& context, const std::string& user_message
             {"content", tool_results}
             });
 
+        // Check for user interruption before the (potentially slow) API call.
+        if (context.cancel && context.cancel->check()) break;
+
         ui::set_status("Thinking...", iteration, max_iterations);
         response = call_claude("", tools, m_conversation_history);
         if (!response.contains("content") || !response.contains("stop_reason")) {
@@ -450,18 +456,25 @@ std::string ClaudeClient::chat(Context& context, const std::string& user_message
     if (iteration >= max_iterations) {
         mclog("Warning: Reached maximum iterations\n");
     }
+    bool user_cancelled = (context.cancel && context.cancel->cancelled());
+    if (user_cancelled) {
+        mclog("Cancelled by user (ESC)\n");
+    }
 
-    // If we stopped with an unanswered tool_use (iteration cap), answer it with a
-    // synthetic result so the conversation stays valid on the next turn — Claude
-    // requires a tool_result after every tool_use.
+    // If we stopped with an unanswered tool_use (iteration cap or user cancel),
+    // answer it with a synthetic result so the conversation stays valid on the
+    // next turn — Claude requires a tool_result after every tool_use.
     if (has_tool_use(response)) {
         json tool_results = json::array();
+        std::string reason = user_cancelled
+            ? "Tool not run: interrupted by user."
+            : "Tool not run: iteration limit reached.";
         for (const auto& block : response["content"]) {
             if (block.value("type", std::string()) == "tool_use") {
                 tool_results.push_back({
                     {"type", "tool_result"},
                     {"tool_use_id", block.value("id", std::string())},
-                    {"content", "Tool not run: iteration limit reached."}
+                    {"content", reason}
                 });
             }
         }

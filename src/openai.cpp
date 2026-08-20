@@ -437,6 +437,9 @@ std::string OpenAIClient::chat(Context& context, const std::string& user_message
     // Tool loop: keep going while the model requests tools. Terminates as soon
     // as the model replies without tool_calls.
     while (message.contains("tool_calls") && !message["tool_calls"].empty() && iteration < max_iterations) {
+        // Check for user interruption (ESC key).
+        if (context.cancel && context.cancel->check()) break;
+
         iteration++;
         mclog("=== Iteration " + std::to_string(iteration) + " ===\n");
 
@@ -518,6 +521,9 @@ std::string OpenAIClient::chat(Context& context, const std::string& user_message
             });
         }
 
+        // Check for user interruption before the (potentially slow) API call.
+        if (context.cancel && context.cancel->check()) break;
+
         ui::set_status("Thinking...", iteration, max_iterations);
         response = call_openai("", tools, m_conversation_history);
         if (!response.contains("choices") || response["choices"].empty()) {
@@ -532,15 +538,22 @@ std::string OpenAIClient::chat(Context& context, const std::string& user_message
     if (iteration >= max_iterations) {
         mclog("Warning: Reached maximum iterations\n");
     }
+    bool user_cancelled = (context.cancel && context.cancel->cancelled());
+    if (user_cancelled) {
+        mclog("Cancelled by user (ESC)\n");
+    }
 
-    // If we stopped with unanswered tool calls (iteration cap), answer them so
-    // the conversation stays valid on the next turn.
+    // If we stopped with unanswered tool calls (iteration cap or user cancel),
+    // answer them so the conversation stays valid on the next turn.
     if (message.contains("tool_calls") && !message["tool_calls"].empty()) {
+        std::string reason = user_cancelled
+            ? "Tool not run: interrupted by user."
+            : "Tool not run: iteration limit reached.";
         for (const auto& tc : message["tool_calls"]) {
             m_conversation_history.push_back({
                 {"role", "tool"},
                 {"tool_call_id", tc.value("id", std::string())},
-                {"content", "Tool not run: iteration limit reached."}
+                {"content", reason}
             });
         }
     }
