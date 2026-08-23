@@ -37,6 +37,22 @@ carries everything else.
   `reasoning_effort` on every request, for gpt-5/o-series and for
   OpenAI-compatible servers that accept the same field.
 
+### Changed
+
+- The editor tool refuses to create or modify anything under `.git/`. A
+  writable `.git/config` or `.git/hooks` would let any allow-listed git command
+  run arbitrary code.
+- On Linux/macOS the config and commands stores are written owner-only
+  (`0600`, directory `0700`), since they may hold a literal API key.
+
+### Fixed
+
+- On Windows, a parameterized command that falls back to `cmd.exe` (batch
+  wrappers such as `npm`, `npx`, `yarn`) now refuses argument values containing
+  `"`, `&`, `|`, `<`, `>`, `^`, `%` or a newline. The line was quoted for
+  `CreateProcess`, which `cmd.exe` does not honour, so a quote in a value could
+  break out and run extra commands.
+
 ## [0.2.0] — 2026-08-14
 
 ### Added

@@ -278,6 +278,44 @@ int main() {
         CHECK_EQ(r, "1|alpha\n2|beta\n3|\n");
     }
 
+    // --- .git is read-only to the model ------------------------------------
+    // A writable .git/config (core.fsmonitor, core.hooksPath) or .git/hooks
+    // would turn any allow-listed git command into code execution.
+    {
+        const std::string gitdir = test_path(".git");
+        const std::string cfg = test_path(".git/config");
+        fs::create_directories(gitdir, ec);
+        write_raw(cfg, "[core]\n");
+
+        std::string r = edit(ctx, json{{"command", "create"},
+                                       {"path", test_path(".git/hooks/pre-commit")},
+                                       {"file_text", "#!/bin/sh\n"}});
+        CHECK_TRUE(r.rfind("ERROR:", 0) == 0 && r.find(".git") != std::string::npos);
+        CHECK_TRUE(!fs::exists(test_path(".git/hooks/pre-commit")));
+
+        r = edit(ctx, json{{"command", "str_replace"},
+                           {"path", cfg},
+                           {"old_str", "[core]"},
+                           {"new_str", "[core]\n\tfsmonitor = evil"}});
+        CHECK_TRUE(r.rfind("ERROR:", 0) == 0);
+        CHECK_EQ(read_raw(cfg), "[core]\n");
+
+        r = edit(ctx, json{{"command", "insert"},
+                           {"path", cfg},
+                           {"insert_line", 1},
+                           {"new_str", "\tfsmonitor = evil"}});
+        CHECK_TRUE(r.rfind("ERROR:", 0) == 0);
+        CHECK_EQ(read_raw(cfg), "[core]\n");
+
+        // Reading it is still fine, and a file merely *named* like .git isn't caught.
+        r = edit(ctx, json{{"command", "view"}, {"path", cfg}});
+        CHECK_EQ(r, "1|[core]\n2|\n");
+        r = edit(ctx, json{{"command", "create"},
+                           {"path", test_path(".gitignore")},
+                           {"file_text", "build/\n"}});
+        CHECK_EQ(r, "OK");
+    }
+
     fs::remove_all(kDir, ec);
 
     std::cout << (g_failures ? "FAILED " : "ok ") << (g_checks - g_failures) << "/" << g_checks

@@ -81,21 +81,49 @@ bool Config::unset(const std::string& key) {
     return false;
 }
 
+// The store may hold a literal API key, so on POSIX the file is created
+// owner-only (0600) and its directory 0700 — the default umask would leave
+// ~/.tapto/config world-readable on a shared machine. The file is opened with
+// the mode up front rather than chmod'ed after writing, so the key is never on
+// disk readable for even a moment; an existing file is tightened too. On
+// Windows the user's profile directory is already ACL'd to the user.
 void Config::save(const fs::path& path) const {
     std::error_code ec;
     if (path.has_parent_path()) {
         fs::create_directories(path.parent_path(), ec);
+#ifndef _WIN32
+        fs::permissions(path.parent_path(), fs::perms::owner_all, ec);
+#endif
     }
 
+    std::string text = "# tapto-code\n";
+    for (const auto& entry : entries_) {
+        text += entry.first + " = " + entry.second + "\n";
+    }
+
+#ifndef _WIN32
+    int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (fd < 0) {
+        throw std::runtime_error("cannot write config file: " + path.string());
+    }
+    (void)::fchmod(fd, 0600);
+    size_t off = 0;
+    while (off < text.size()) {
+        ssize_t n = ::write(fd, text.data() + off, text.size() - off);
+        if (n < 0) {
+            ::close(fd);
+            throw std::runtime_error("cannot write config file: " + path.string());
+        }
+        off += static_cast<size_t>(n);
+    }
+    ::close(fd);
+#else
     std::ofstream out(path, std::ios::trunc);
     if (!out) {
         throw std::runtime_error("cannot write config file: " + path.string());
     }
-
-    out << "# tapto-code\n";
-    for (const auto& entry : entries_) {
-        out << entry.first << " = " << entry.second << "\n";
-    }
+    out << text;
+#endif
 }
 
 } // namespace tapto

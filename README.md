@@ -256,7 +256,10 @@ since they are indistinguishable in what the model was shown.
 **Sandbox:** the file tools (`str_replace_based_edit_tool`, `find_files`) are
 confined to the directory tapto-code was started in and its subdirectories. Paths
 that resolve outside that subtree — via `..`, an absolute path, or a symlink —
-are rejected. (`run_command` is governed separately: it can only run the
+are rejected. Inside the tree, `.git/` is read-only to the editor: a writable
+`.git/config` (`core.fsmonitor`, `core.hooksPath`) or `.git/hooks` would turn
+any allow-listed git command — even `git status` — into arbitrary code
+execution. (`run_command` is governed separately: it can only run the
 commands you explicitly allow-list, so its reach is whatever you configure.)
 
 ## Commands
@@ -323,7 +326,9 @@ runs through the shell, so it can use pipes and redirection.)
 
 On Windows, batch wrappers like `npm`, `npx`, and `yarn` are `.cmd` files that
 can't be launched directly; parameterized commands targeting them are run via
-`cmd.exe` automatically, so `npm %*` just works.
+`cmd.exe` automatically, so `npm %*` just works. Because `cmd.exe` re-parses
+that line, argument values containing `"`, `&`, `|`, `<`, `>`, `^`, `%` or a
+newline are refused for those commands rather than risk being interpreted.
 
 Because values are literal arguments, the model cannot inject extra commands.
 Put placeholders only at *data* positions, not where they could become a flag

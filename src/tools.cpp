@@ -243,6 +243,29 @@ bool resolve_in_sandbox(const std::string& input, fs::path& out, std::string& er
     return true;
 }
 
+// True if `resolved` (already inside the sandbox) is the repository's .git
+// directory or anything under it. The model has no reason to write there, and
+// a writable .git turns every allow-listed git command into code execution:
+// .git/config can name a core.fsmonitor or core.hooksPath command that even
+// `git status` runs, and .git/hooks/* run on commit.
+bool in_git_dir(const fs::path& resolved) {
+    for (const auto& part : resolved.lexically_relative(sandbox_root())) {
+        if (part == ".git") return true;
+    }
+    return false;
+}
+
+// Resolve a path the model wants to write to: sandboxed, and never under .git.
+bool resolve_for_write(const std::string& input, fs::path& out, std::string& error) {
+    if (!resolve_in_sandbox(input, out, error)) return false;
+    if (in_git_dir(out)) {
+        error = "ERROR: '" + input + "' is inside .git, which tapto-code never "
+                "modifies. Use an allow-listed git command instead.";
+        return false;
+    }
+    return true;
+}
+
 // --- text editor tool -----------------------------------------------------
 
 std::string execute_text_editor(Context& /*context*/, const json& in) {
@@ -329,7 +352,7 @@ std::string execute_text_editor(Context& /*context*/, const json& in) {
             fs::path path;
             {
                 std::string sandbox_err;
-                if (!resolve_in_sandbox(in["path"].get<std::string>(), path, sandbox_err)) {
+                if (!resolve_for_write(in["path"].get<std::string>(), path, sandbox_err)) {
                     return sandbox_err;
                 }
             }
@@ -352,7 +375,7 @@ std::string execute_text_editor(Context& /*context*/, const json& in) {
             fs::path path;
             {
                 std::string sandbox_err;
-                if (!resolve_in_sandbox(in["path"].get<std::string>(), path, sandbox_err)) {
+                if (!resolve_for_write(in["path"].get<std::string>(), path, sandbox_err)) {
                     return sandbox_err;
                 }
             }
@@ -400,7 +423,7 @@ std::string execute_text_editor(Context& /*context*/, const json& in) {
             fs::path path;
             {
                 std::string sandbox_err;
-                if (!resolve_in_sandbox(in["path"].get<std::string>(), path, sandbox_err)) {
+                if (!resolve_for_write(in["path"].get<std::string>(), path, sandbox_err)) {
                     return sandbox_err;
                 }
             }
@@ -768,7 +791,23 @@ std::string exec_capture(const std::vector<std::string>& argv, int& exit_code) {
     // be launched by CreateProcess directly; if the program wasn't found, retry
     // through cmd.exe, which resolves them via PATHEXT. (/s + surrounding quotes
     // makes cmd run the rest of the line verbatim.)
+    //
+    // That line was quoted for CommandLineToArgvW, which cmd.exe does not speak:
+    // it has no \" escape, so a quote inside a value toggles its quoting state
+    // and whatever follows — `& del ...` — becomes live shell syntax, and %VAR%
+    // is expanded even inside quotes. No quoting makes arbitrary text safe for
+    // cmd.exe, so the only honest answer is to refuse values that contain its
+    // metacharacters rather than silently hand the model a shell.
     if (err == ERROR_FILE_NOT_FOUND) {
+        for (const std::string& a : argv) {
+            if (a.find_first_of("\"&|<>^%\r\n") != std::string::npos) {
+                exit_code = -1;
+                return "ERROR: '" + argv[0] + "' is a batch wrapper that must run via "
+                       "cmd.exe, and the argument '" + a + "' contains a character "
+                       "(one of \" & | < > ^ % or a newline) that cmd.exe would "
+                       "interpret. Use a value without those characters.";
+            }
+        }
         std::string viacmd = "cmd.exe /s /c \"" + cmdline + "\"";
         if (win_launch(viacmd, out, exit_code, err)) return out;
     }
