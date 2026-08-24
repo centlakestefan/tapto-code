@@ -6,6 +6,12 @@
 #include <fstream>
 #include <stdexcept>
 
+#ifndef _WIN32
+#  include <fcntl.h>
+#  include <sys/stat.h>
+#  include <unistd.h>
+#endif
+
 namespace fs = std::filesystem;
 
 namespace tapto {
