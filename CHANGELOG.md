@@ -36,6 +36,11 @@ carries everything else.
 - `<name>-reasoning-effort` config key: the openai dialect sends it as
   `reasoning_effort` on every request, for gpt-5/o-series and for
   OpenAI-compatible servers that accept the same field.
+- `run_command` gains an optional `cwd`: run the chosen command in a subdirectory
+  of the working folder (e.g. to build in a subfolder). It is resolved against the
+  working directory and confined to that subtree, so it can never escape it, and a
+  missing directory is refused with a clear error. Built-in commands are unaffected
+  — they take explicit paths.
 
 ### Changed
 

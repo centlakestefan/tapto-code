@@ -565,9 +565,29 @@ std::string execute_find_files(Context& /*context*/, const json& in) {
 
 // Run a command line through the OS shell, capturing stdout+stderr. The command
 // itself is trusted (it came from the user's allow-list); the model only ever
-// selects one by name, never supplies the command text.
-std::string run_shell(const std::string& cmdline, int& exit_code) {
-    std::string full = cmdline + " 2>&1";
+// selects one by name, never supplies the command text. `cwd` (always inside the
+// sandbox) is the directory the command runs in: because popen offers no way to
+// name a working directory, we prepend a `cd` with platform-safe quoting.
+std::string run_shell(const std::string& cmdline, const fs::path& cwd, int& exit_code) {
+    const std::string dir = cwd.string();
+    std::string full;
+#ifdef _WIN32
+    if (dir.find_first_of("\"%") != std::string::npos) {
+        exit_code = -1;
+        return "ERROR: the working directory '" + dir +
+               "' contains a character (\" or %) cmd.exe would interpret. "
+               "Use a plain directory name.";
+    }
+    full = "cd /d \"" + dir + "\" && " + cmdline + " 2>&1";
+#else
+    std::string cd = "cd '";
+    for (char c : dir) {
+        if (c == '\'') cd += "'\\''"; // close, escaped quote, reopen
+        else cd += c;
+    }
+    cd += "'";
+    full = cd + " && " + cmdline + " 2>&1";
+#endif
 #ifdef _WIN32
     FILE* pipe = _popen(full.c_str(), "r");
 #else
@@ -739,7 +759,8 @@ std::string win_quote_arg(const std::string& a) {
 // Run argv directly (no shell) and capture stdout+stderr.
 // Launch one command line, capturing stdout+stderr. On success returns true and
 // fills out/code; if the process couldn't be started returns false and sets err.
-bool win_launch(const std::string& cmdline, std::string& out, int& code, DWORD& err) {
+bool win_launch(const std::string& cmdline, const std::wstring& cwd,
+                std::string& out, int& code, DWORD& err) {
     SECURITY_ATTRIBUTES sa{};
     sa.nLength = sizeof(sa);
     sa.bInheritHandle = TRUE;
@@ -760,7 +781,8 @@ bool win_launch(const std::string& cmdline, std::string& out, int& code, DWORD& 
     buf.push_back(L'\0');
 
     BOOL ok = CreateProcessW(nullptr, buf.data(), nullptr, nullptr, TRUE,
-                             CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+                             CREATE_NO_WINDOW, nullptr,
+                             cwd.empty() ? nullptr : cwd.c_str(), &si, &pi);
     if (!ok) { err = GetLastError(); CloseHandle(wr); CloseHandle(rd); return false; }
     CloseHandle(wr);
 
@@ -779,13 +801,14 @@ bool win_launch(const std::string& cmdline, std::string& out, int& code, DWORD& 
     return true;
 }
 
-std::string exec_capture(const std::vector<std::string>& argv, int& exit_code) {
+std::string exec_capture(const std::vector<std::string>& argv, const fs::path& cwd, int& exit_code) {
     std::string cmdline;
     for (size_t i = 0; i < argv.size(); ++i) { if (i) cmdline += ' '; cmdline += win_quote_arg(argv[i]); }
 
+    std::wstring wcwd = utf8_to_wide(cwd.string());
     std::string out;
     DWORD err = 0;
-    if (win_launch(cmdline, out, exit_code, err)) return out;
+    if (win_launch(cmdline, wcwd, out, exit_code, err)) return out;
 
     // Batch wrappers (.cmd/.bat such as npm, npx, yarn) and shell builtins can't
     // be launched by CreateProcess directly; if the program wasn't found, retry
@@ -809,7 +832,7 @@ std::string exec_capture(const std::vector<std::string>& argv, int& exit_code) {
             }
         }
         std::string viacmd = "cmd.exe /s /c \"" + cmdline + "\"";
-        if (win_launch(viacmd, out, exit_code, err)) return out;
+        if (win_launch(viacmd, wcwd, out, exit_code, err)) return out;
     }
 
     exit_code = -1;
@@ -817,8 +840,10 @@ std::string exec_capture(const std::vector<std::string>& argv, int& exit_code) {
            std::to_string(err) + ")";
 }
 #else
-// Run argv directly (no shell) and capture stdout+stderr.
-std::string exec_capture(const std::vector<std::string>& argv, int& exit_code) {
+// Run argv directly (no shell) and capture stdout+stderr. The child chdir's to
+// `cwd` (inside the sandbox) before exec, so the parent's working directory is
+// never touched.
+std::string exec_capture(const std::vector<std::string>& argv, const fs::path& cwd, int& exit_code) {
     int fds[2];
     if (pipe(fds) != 0) { exit_code = -1; return "ERROR: pipe failed"; }
     pid_t pid = fork();
@@ -828,6 +853,12 @@ std::string exec_capture(const std::vector<std::string>& argv, int& exit_code) {
         dup2(fds[1], STDERR_FILENO);
         close(fds[0]);
         close(fds[1]);
+        const std::string dir = cwd.string();
+        if (chdir(dir.empty() ? "." : dir.c_str()) != 0) {
+            std::string e = "ERROR: failed to change to working directory '" + dir + "'\n";
+            (void)!write(STDOUT_FILENO, e.data(), e.size());
+            _exit(127);
+        }
         std::vector<char*> c;
         for (const auto& s : argv) c.push_back(const_cast<char*>(s.c_str()));
         c.push_back(nullptr);
@@ -1149,6 +1180,23 @@ std::string execute_run_command(Context& /*context*/, const json& in) {
         }
         const std::string& tpl = it->second;
 
+        // Working directory for the command (default: the sandbox root). It is
+        // resolved relative to the sandbox and must stay inside it, so a build
+        // can be pointed at any subfolder — but never out of the tree.
+        fs::path cwd = sandbox_root();
+        if (in.contains("cwd")) {
+            if (!in["cwd"].is_string()) return "ERROR: 'cwd' must be a string.";
+            const std::string raw = in["cwd"].get<std::string>();
+            std::string err;
+            if (!resolve_in_sandbox(raw, cwd, err)) return err;
+            std::error_code ec;
+            if (!fs::is_directory(cwd, ec)) {
+                return "ERROR: cwd '" + raw + "' is not an existing directory. "
+                       "Create it first (e.g. with an allow-listed build command or "
+                       "str_replace create) before running a command in it.";
+            }
+        }
+
         int exit_code = 0;
         std::string output;
         std::string display;
@@ -1159,17 +1207,21 @@ std::string execute_run_command(Context& /*context*/, const json& in) {
             std::string err;
             if (!build_argv(tpl, args, argv, err)) return err;
             display = join_argv(argv);
-            output = exec_capture(argv, exit_code);
+            output = exec_capture(argv, cwd, exit_code);
         } else {
             // No placeholders: run through the shell (allows pipes/redirection).
             display = tpl;
-            output = run_shell(tpl, exit_code);
+            output = run_shell(tpl, cwd, exit_code);
         }
 
         constexpr size_t kMaxBytes = 16000;
         if (output.size() > kMaxBytes) output = output.substr(0, kMaxBytes) + "\n... [output truncated]";
 
         std::ostringstream r;
+        fs::path rel = cwd.lexically_relative(sandbox_root());
+        if (!rel.empty() && !rel.filename().empty()) {
+            r << "working dir: " << rel.string() << "\n";
+        }
         r << "$ " << display << "\n" << output;
         if (!output.empty() && output.back() != '\n') r << "\n";
         r << "[exit code: " << exit_code << "]";
@@ -1265,7 +1317,9 @@ std::vector<ToolSpec> builtin_tools() {
         "shell commands are NOT allowed. Pass a command's arguments via 'args' (in "
         "order). For configured commands with %1, %2, ... placeholders, args fill "
         "them (%* receives all remaining values); a %p1-style placeholder is a path "
-        "argument that must stay inside the working directory. Returns the command's "
+        "argument that must stay inside the working directory. Pass 'cwd' to run the "
+        "command in a subdirectory of the working folder (e.g. to build in a "
+        "subfolder); it is confined to the working directory. Returns the command's "
         "output.";
     run.parameters = {
         {"type", "object"},
@@ -1275,6 +1329,10 @@ std::vector<ToolSpec> builtin_tools() {
                 {"type", "array"},
                 {"items", {{"type", "string"}}},
                 {"description", "Arguments for the command (built-in flags/paths, or values for %1, %2, ... placeholders), in order."}
+            }},
+            {"cwd", {
+                {"type", "string"},
+                {"description", "Optional directory to run the command in, relative to (or absolute within) the working directory. Must exist and stay inside the working directory. Use to build in subfolders. Defaults to the working directory."}
             }},
         }},
         {"required", {"name"}},
