@@ -127,3 +127,19 @@ else()
 endif()
 
 add_test(NAME edits COMMAND test-edits)
+
+# /compact's input trimmer (AiBackend::buildTrimmedHistoryForSummary) is
+# header-only against the base class, so this target compiles a single test
+# file that drives it through a stub backend — no providers, keys, or network.
+add_executable(test-compact
+  tests/test_compact.cpp
+)
+target_include_directories(test-compact PRIVATE include)
+target_link_libraries(test-compact PRIVATE nlohmann_json::nlohmann_json)
+if(MSVC)
+  target_compile_options(test-compact PRIVATE /W4 /EHsc /utf-8)
+else()
+  target_compile_options(test-compact PRIVATE -Wall -Wextra)
+endif()
+
+add_test(NAME compact COMMAND test-compact)

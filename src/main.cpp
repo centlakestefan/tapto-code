@@ -1057,6 +1057,19 @@ int cmd_chat(const std::string& requested_provider) {
             // summarization can be rolled back instead of throwing the session
             // away: compaction must never leave you with "nothing."
             auto before = client->getHistory();
+            // Feed the summarizer a trimmed view of the conversation — large
+            // tool-result / file payloads swapped for short placeholders — so
+            // this (the biggest request of the session) stays small and keeps
+            // output-token headroom on providers that share one window for
+            // input + output (vLLM, Ollama, LM Studio, ...). The live history
+            // is untouched: a success replaces it with the summary (see
+            // beginWithSummary below) and a failure restores `before` in the
+            // catch block, so we never persist the trimmed copy either way.
+            auto trimmed = client->buildTrimmedHistoryForSummary();
+            client->loadHistory(trimmed);
+            mclog("[/compact] summarization input: " + std::to_string(before.dump().size())
+                   + " serialized bytes -> " + std::to_string(trimmed.dump().size())
+                   + " after trimming");
             std::string summary;
             try {
                 ui::print_line("(summarizing conversation…)");

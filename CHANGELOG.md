@@ -52,6 +52,13 @@ carries everything else.
 
 ### Changed
 
+- `/compact` summarizes a *trimmed* view of the conversation rather than the
+  raw one: tool outputs over ~2 KB are swapped for a short placeholder before
+  the model is asked to summarize, while the tool calls (which files were read
+  or edited) stay. The live conversation is only replaced after a successful
+  summary, and short conversations are unchanged. This keeps the largest
+  request of the session small and leaves real output-token headroom for the
+  summary, so compaction stops ending in a truncated `length` reply.
 - The editor tool refuses to create or modify anything under `.git/`. A
   writable `.git/config` or `.git/hooks` would let any allow-listed git command
   run arbitrary code.
