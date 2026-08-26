@@ -1114,6 +1114,31 @@ int cmd_chat(const std::string& requested_provider) {
             ui::print_help(tool_names);
             continue;
         }
+
+        // Show the current session environment: where, with what, and how full.
+        if (line == "/env") {
+            auto hist = client->getHistory();
+            size_t msg_count = hist.is_array() ? hist.size() : 0;
+            // Rough turn estimate: each user+assistant exchange is 2 messages
+            // (more when tool calls are interleaved); the first "user" message
+            // in a /compact-seeded conversation is the summary, so we count it.
+            size_t turns = (msg_count / 2) + (msg_count % 2 ? 1 : 0);
+
+            std::cout
+                << "\x1b[1m"  << "  Directory"   << "\x1b[0m"
+                << "  " << std::filesystem::current_path().string() << "\n"
+                << "\x1b[1m"  << "  Provider"    << "\x1b[0m"
+                << "  " << provider_label(*provider)
+                << "  │  " << model << "\n"
+                << "\x1b[1m"  << "  History"     << "\x1b[0m"
+                << "  " << msg_count << " messages (~" << turns << " turns)\n"
+                << "\x1b[1m"  << "  Max tool it." << "\x1b[0m"
+                << "  " << ai_config.maxToolIterations() << "\n"
+                << "\x1b[1m"  << "  Version"     << "\x1b[0m"
+                << "  " << TAPTO_CODE_VERSION << " (" << TAPTO_CODE_COMMIT << ")\n"
+                << "\n";
+            continue;
+        }
         if (line.rfind("/add-command", 0) == 0) {
             std::istringstream iss(line);
             std::string slash, name;

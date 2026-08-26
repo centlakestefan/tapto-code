@@ -33,6 +33,12 @@ carries everything else.
 
 ### Added
 
+- `/env` — shows the session environment: working directory, provider/model,
+  conversation length, tool-iteration cap, and build version.
+- `/compact` — ask the model to summarize the conversation and restart with a
+  compact note, freeing context-window space on long sessions. ([85d1c0c])
+- Press `ESC` to interrupt the model mid-response; the partial output is kept
+  and control returns to you. ([8649d5c])
 - `<name>-reasoning-effort` config key: the openai dialect sends it as
   `reasoning_effort` on every request, for gpt-5/o-series and for
   OpenAI-compatible servers that accept the same field.
@@ -53,6 +59,14 @@ carries everything else.
 
 ### Fixed
 
+- Tool results containing invalid UTF-8 bytes (e.g. binary file reads, some
+  Windows console output) are now normalized before being sent to any backend,
+  preventing protocol-level errors. ([9a829f0])
+- `run_command` now tolerates the stray top-level `path` field that models
+  sometimes send (conflating it with the editor tool): it is treated as the sole
+  argument, so `{"name":"ls","path":"driver"}` works the same as
+  `{"name":"ls","args":["driver"]}`. When both `args` and `path` are present,
+  `args` wins. ([b3417aa])
 - On Windows, a parameterized command that falls back to `cmd.exe` (batch
   wrappers such as `npm`, `npx`, `yarn`) now refuses argument values containing
   `"`, `&`, `|`, `<`, `>`, `^`, `%` or a newline. The line was quoted for
@@ -125,3 +139,7 @@ project directory, against Claude, OpenAI or Gemini. ([d9ac02c])
 [4f53472]: https://github.com/centlakestefan/tapto-code/commit/4f53472
 [8d5b064]: https://github.com/centlakestefan/tapto-code/commit/8d5b064
 [b58e6b9]: https://github.com/centlakestefan/tapto-code/commit/b58e6b9
+[85d1c0c]: https://github.com/centlakestefan/tapto-code/commit/85d1c0c
+[8649d5c]: https://github.com/centlakestefan/tapto-code/commit/8649d5c
+[9a829f0]: https://github.com/centlakestefan/tapto-code/commit/9a829f0
+[b3417aa]: https://github.com/centlakestefan/tapto-code/commit/b3417aa
