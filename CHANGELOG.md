@@ -34,7 +34,7 @@ carries everything else.
 ### Added
 
 - `/env` — shows the session environment: working directory, provider/model,
-  conversation length, tool-iteration cap, and build version.
+  conversation length, tool-iteration cap, and build version. ([e4ed224])
 - `/compact` — ask the model to summarize the conversation and restart with a
   compact note, freeing context-window space on long sessions. ([85d1c0c])
 - Press `ESC` to interrupt the model mid-response; the partial output is kept
@@ -143,3 +143,4 @@ project directory, against Claude, OpenAI or Gemini. ([d9ac02c])
 [8649d5c]: https://github.com/centlakestefan/tapto-code/commit/8649d5c
 [9a829f0]: https://github.com/centlakestefan/tapto-code/commit/9a829f0
 [b3417aa]: https://github.com/centlakestefan/tapto-code/commit/b3417aa
+[e4ed224]: https://github.com/centlakestefan/tapto-code/commit/e4ed224
