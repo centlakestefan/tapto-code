@@ -34,7 +34,8 @@ carries everything else.
 ### Added
 
 - `/env` — shows the session environment: working directory, provider/model,
-  conversation length, tool-iteration cap, and build version. ([e4ed224])
+  conversation length, context usage (input tokens reported by the provider
+  for the last request), tool-iteration cap, and build version. ([e4ed224])
 - `/compact` — ask the model to summarize the conversation and restart with a
   compact note, freeing context-window space on long sessions. ([85d1c0c])
 - Press `ESC` to interrupt the model mid-response; the partial output is kept

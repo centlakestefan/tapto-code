@@ -181,7 +181,9 @@ json ClaudeClient::call_claude(const std::string& user_message, const json& tool
 
         // Success
         if (status == 200) {
-            return json::parse(res->body);
+            json resp = json::parse(res->body);
+            m_lastInputTokens = resp.value("usage", json::object()).value("input_tokens", 0);
+            return resp;
         }
 
         // Rate limiting (429)
@@ -508,6 +510,7 @@ std::string ClaudeClient::chat(Context& context, const std::string& user_message
 /// <summary>Starts a new conversation by clearing the conversation history.</summary>
 void ClaudeClient::start() {
     m_conversation_history = json::array();
+    resetTokenAccounting();
     mclog("Started new conversation (history cleared)\n");
 }
 
@@ -534,6 +537,7 @@ json ClaudeClient::getHistory() const {
 
 /// <summary>Starts a new conversation seeded with a summary of the previous one (/compact).</summary>
 void ClaudeClient::beginWithSummary(const std::string& summaryText) {
+    resetTokenAccounting();
     m_conversation_history = json::array();
     m_conversation_history.push_back({
         {"role", "user"},

@@ -83,6 +83,7 @@ public:
     bool hasHistory() const override;
     void loadHistory(const nlohmann::json& history) override;
     nlohmann::json getHistory() const override;
+    std::size_t lastInputTokens() const override { return m_lastInputTokens; }
     // Seed a fresh conversation with a summary of the previous discussion (/compact).
     void beginWithSummary(const std::string& summaryText) override;
 };

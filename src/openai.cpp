@@ -243,7 +243,21 @@ json OpenAIClient::call_openai(const std::string& user_message, const json& tool
 
         // Success
         if (status == 200) {
-            return json::parse(res->body);
+            json resp = json::parse(res->body);
+            // How the provider names the input consumption varies: OpenAI uses
+            // usage.input_tokens, but most OpenAI-compatible servers (vLLM,
+            // Ollama, LM Studio, ...) use usage.prompt_tokens. Accept both.
+            json usage = resp.value("usage", json::object());
+            if (usage.contains("input_tokens")) {
+                m_lastInputTokens = usage.at("input_tokens").get<std::size_t>();
+            } else if (usage.contains("prompt_tokens")) {
+                m_lastInputTokens = usage.at("prompt_tokens").get<std::size_t>();
+            } else {
+                m_lastInputTokens = 0;
+                mclog("[usage] provider did not report input tokens "
+                      "(no usage.input_tokens / usage.prompt_tokens)\n");
+            }
+            return resp;
         }
 
         // Rate limiting (429)
@@ -577,6 +591,7 @@ std::string OpenAIClient::chat(Context& context, const std::string& user_message
 /// <summary>Starts a new conversation by clearing the conversation history.</summary>
 void OpenAIClient::start() {
     m_conversation_history = json::array();
+    resetTokenAccounting();
     mclog("Started new conversation (history cleared)\n");
 }
 
@@ -603,6 +618,7 @@ json OpenAIClient::getHistory() const {
 
 /// <summary>Starts a new conversation seeded with a summary of the previous one (/compact).</summary>
 void OpenAIClient::beginWithSummary(const std::string& summaryText) {
+    resetTokenAccounting();
     m_conversation_history = json::array();
     m_conversation_history.push_back({
         {"role", "user"},

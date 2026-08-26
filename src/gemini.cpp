@@ -168,7 +168,9 @@ nlohmann::json GeminiClient::call_gemini(
         connection_retry_count = 0;
 
         if (res->status == 200) {
-            return json::parse(res->body);
+            json resp = json::parse(res->body);
+            m_lastInputTokens = resp.value("usageMetadata", json::object()).value("promptTokenCount", 0);
+            return resp;
         }
 
         // Rate limiting (429)
@@ -498,6 +500,7 @@ std::string GeminiClient::chat(Context& context, const std::string& user_message
 /// <summary>Starts a new conversation by clearing the conversation history.</summary>
 void GeminiClient::start() {
     m_conversation_history = json::array();
+    resetTokenAccounting();
     mclog("Started new conversation (history cleared)\n");
 }
 
@@ -526,6 +529,7 @@ json GeminiClient::getHistory() const {
 /// Gemini messages carry `parts` rather than `content`, so the seed is built
 /// in that native shape (the first message must be a user turn).
 void GeminiClient::beginWithSummary(const std::string& summaryText) {
+    resetTokenAccounting();
     m_conversation_history = json::array();
     m_conversation_history.push_back({
         {"role", "user"},

@@ -1123,6 +1123,11 @@ int cmd_chat(const std::string& requested_provider) {
             // (more when tool calls are interleaved); the first "user" message
             // in a /compact-seeded conversation is the summary, so we count it.
             size_t turns = (msg_count / 2) + (msg_count % 2 ? 1 : 0);
+            // How full the model's context window is: the input-token count the
+            // provider reported for the most recent request (system prompt +
+            // history + current message). 0 until the first turn — or after a
+            // reset (/clear, /compact) has cleared it — has run.
+            size_t in_tokens = client->lastInputTokens();
 
             std::cout
                 << "\x1b[1m"  << "  Directory"   << "\x1b[0m"
@@ -1132,6 +1137,10 @@ int cmd_chat(const std::string& requested_provider) {
                 << "  │  " << model << "\n"
                 << "\x1b[1m"  << "  History"     << "\x1b[0m"
                 << "  " << msg_count << " messages (~" << turns << " turns)\n"
+                << "\x1b[1m"  << "  Context"     << "\x1b[0m"
+                << "  " << (in_tokens == 0
+                          ? std::string("— (no request yet)")
+                          : std::to_string(in_tokens) + " input tokens") << "\n"
                 << "\x1b[1m"  << "  Max tool it." << "\x1b[0m"
                 << "  " << ai_config.maxToolIterations() << "\n"
                 << "\x1b[1m"  << "  Version"     << "\x1b[0m"

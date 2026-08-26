@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <optional>
 #include <string>
 
@@ -35,6 +36,17 @@ public:
     virtual bool hasHistory() const = 0;
     virtual void loadHistory(const nlohmann::json& history) = 0;
     virtual nlohmann::json getHistory() const = 0;
+
+    // Input tokens the provider reported for the most recent request (usage.
+    // input_tokens / usageMetadata.promptTokenCount) — i.e. how full the
+    // context window is right now. 0 until the first turn has run, or when a
+    // provider does not report it.
+    virtual std::size_t lastInputTokens() const = 0;
+
+    // Reset the request accounting (start() re-clears the conversation and
+    // beginWithSummary() replaces it with a /compact summary).
+    virtual void resetTokenAccounting() { m_lastInputTokens = 0; }
+    std::size_t m_lastInputTokens = 0;
 
     // Replace the conversation with a fresh one whose first user turn carries
     // a summary of the discussion up to this point (used by the /compact
