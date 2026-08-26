@@ -1053,17 +1053,44 @@ int cmd_chat(const std::string& requested_provider) {
                 "the user's goals, decisions made, files read or modified, and the current "
                 "state of any in-progress task. Reply with the summary only. " +
                 (focus.empty() ? std::string() : "Emphasize: " + focus);
+            // Snapshot the current conversation so a failed or empty
+            // summarization can be rolled back instead of throwing the session
+            // away: compaction must never leave you with "nothing."
+            auto before = client->getHistory();
             std::string summary;
             try {
                 ui::print_line("(summarizing conversation…)");
                 summary = client->chat(summarize_ctx, prompt);
             } catch (const std::exception& e) {
-                // History is untouched on failure — the summary is requested
-                // within the live conversation and only replaced on success.
-                ui::print_error(e.what());
+                // Restore the untouched conversation — the summarize request was
+                // made in-turn, so a failure may have appended stray messages.
+                client->loadHistory(before);
+                mclog(std::string("[/compact] FAILED: ") + e.what() + "\n");
+                ui::print_error(std::string("compaction failed: ") + e.what());
                 continue;
             }
+            // Dump the raw model output to the trace file (when one is set) so
+            // the exact summary — empty or not — can be inspected while
+            // debugging the next couple of runs.
+            mclog("[/compact] raw summary (" + std::to_string(summary.size()) + " bytes):\n"
+                   + summary + "\n[/compact] --- end of raw summary ---\n");
+            // Guard against a missing/empty summary. Thinking models (Claude,
+            // Gemini) may return the summary inside their reasoning/thought
+            // blocks, which the text-only reply extraction drops — that would
+            // reseed the conversation with an empty note and the model would
+            // "know" nothing of the previous session. Never discard a real
+            // session for an empty summary: keep what we had and say so.
+            {
+                size_t first = summary.find_first_not_of(" \t\r\n");
+                if (first == std::string::npos) {
+                    client->loadHistory(before);
+                    mclog("[/compact] empty summary — original conversation kept\n");
+                    ui::print_error("compaction produced no summary — conversation kept as is.");
+                    continue;
+                }
+            }
             client->beginWithSummary(summary);
+            mclog("[/compact] reseeded the conversation with a " + std::to_string(summary.size()) + "-byte summary\n");
             ui::print_line("(conversation compacted)");
             continue;
         }

@@ -473,13 +473,22 @@ std::string GeminiClient::chat(Context& context, const std::string& user_message
 
     ui::end_status();
 
-    // Collect the assistant's final text reply.
+    // Collect the assistant's final text reply. Fall back to the thought parts
+    // if the model emitted no visible text (a thinking model that answers
+    // entirely in its thought stream — e.g. a /compact summary request),
+    // matching the OpenAI backend's extraction so no summary is dropped.
     std::string reply;
+    std::string thought;
     for (const auto& part : model_response_message["parts"]) {
-        if (part.contains("text") && !part.value("thought", false)) {
-            reply += part["text"].get<std::string>();
+        if (part.contains("text")) {
+            if (part.value("thought", false)) {
+                thought += part["text"].get<std::string>();
+            } else {
+                reply += part["text"].get<std::string>();
+            }
         }
     }
+    if (reply.empty() && !thought.empty()) reply = thought;
     if (finish_reason == "MAX_TOKENS") {
         reply += "\n[truncated: hit max output tokens - raise max-output-tokens]";
     }

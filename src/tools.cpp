@@ -219,16 +219,22 @@ const fs::path& sandbox_root() {
     return root;
 }
 
-// Resolve `input` (absolute, or relative to the sandbox root) and confirm it
-// stays within the root subtree. weakly_canonical normalizes ".."/"." and
-// resolves symlinks in the existing prefix, so attempts to escape via those are
-// caught. On success fills `out` with the resolved absolute path and returns
-// true; otherwise sets `error` and returns false.
-bool resolve_in_sandbox(const std::string& input, fs::path& out, std::string& error) {
+// Resolve `input` (absolute, or relative to `base`) and confirm it stays
+// within the sandbox root. `base` (default: the sandbox root itself) is the
+// directory relative paths are resolved against — e.g. a `cwd` supplied to a
+// command — so a caller can target a subfolder without ever escaping the root:
+// the final check below still pins the result to the sandbox root.
+// weakly_canonical normalizes ".."/"." and resolves symlinks in the existing
+// prefix, so attempts to escape via those are caught. On success fills `out`
+// with the resolved absolute path and returns true; otherwise sets `error` and
+// returns false.
+bool resolve_in_sandbox(const std::string& input, fs::path& out, std::string& error,
+                        const fs::path& base = fs::path()) {
     const fs::path& root = sandbox_root();
+    const fs::path anchor = base.empty() ? root : base;
     std::error_code ec;
     fs::path in_path(input);
-    fs::path abs = in_path.is_absolute() ? in_path : (root / in_path);
+    fs::path abs = in_path.is_absolute() ? in_path : (anchor / in_path);
     fs::path resolved = fs::weakly_canonical(abs, ec);
     if (ec) resolved = abs.lexically_normal();
 
@@ -906,7 +912,7 @@ std::string cap_output(std::string s) {
     return s;
 }
 
-std::string builtin_wc(const std::vector<std::string>& args) {
+std::string builtin_wc(const std::vector<std::string>& args, const fs::path& base) {
     bool l = false, w = false, c = false;
     std::string file;
     for (const auto& a : args) {
@@ -920,7 +926,7 @@ std::string builtin_wc(const std::vector<std::string>& args) {
     if (file.empty()) return "ERROR: wc: missing file operand";
     fs::path p;
     std::string err;
-    if (!resolve_in_sandbox(file, p, err)) return err;
+    if (!resolve_in_sandbox(file, p, err, base)) return err;
     std::string content;
     if (!read_file(p, content)) return "ERROR: wc: cannot read " + file;
 
@@ -971,14 +977,14 @@ std::string parse_head_tail(const std::vector<std::string>& args, size_t& n, std
     return "";
 }
 
-std::string builtin_head_tail(bool head, const std::vector<std::string>& args) {
+std::string builtin_head_tail(bool head, const std::vector<std::string>& args, const fs::path& base) {
     size_t n = 10;
     std::string file;
     std::string perr = parse_head_tail(args, n, file);
     if (!perr.empty()) return perr + (head ? " (head)" : " (tail)");
     fs::path p;
     std::string err;
-    if (!resolve_in_sandbox(file, p, err)) return err;
+    if (!resolve_in_sandbox(file, p, err, base)) return err;
     std::string content;
     if (!read_file(p, content)) return "ERROR: cannot read " + file;
 
@@ -993,7 +999,7 @@ std::string builtin_head_tail(bool head, const std::vector<std::string>& args) {
     return cap_output(out.str());
 }
 
-std::string builtin_cat(const std::vector<std::string>& args) {
+std::string builtin_cat(const std::vector<std::string>& args, const fs::path& base) {
     std::string file;
     for (const auto& a : args) {
         if (!a.empty() && a[0] == '-') return "ERROR: cat: unknown flag '" + a + "'";
@@ -1003,7 +1009,7 @@ std::string builtin_cat(const std::vector<std::string>& args) {
     if (file.empty()) return "ERROR: cat: missing file operand";
     fs::path p;
     std::string err;
-    if (!resolve_in_sandbox(file, p, err)) return err;
+    if (!resolve_in_sandbox(file, p, err, base)) return err;
     std::error_code ec;
     if (fs::is_directory(p, ec)) return "ERROR: cat: " + file + " is a directory";
     std::string content;
@@ -1014,7 +1020,7 @@ std::string builtin_cat(const std::vector<std::string>& args) {
     return content;
 }
 
-std::string builtin_ls(const std::vector<std::string>& args) {
+std::string builtin_ls(const std::vector<std::string>& args, const fs::path& base) {
     std::string path = ".";
     bool have_path = false;
     for (const auto& a : args) {
@@ -1024,7 +1030,7 @@ std::string builtin_ls(const std::vector<std::string>& args) {
     }
     fs::path p;
     std::string err;
-    if (!resolve_in_sandbox(path, p, err)) return err;
+    if (!resolve_in_sandbox(path, p, err, base)) return err;
     std::error_code ec;
     if (!fs::exists(p, ec)) return "ERROR: ls: path not found: " + path;
     if (!fs::is_directory(p, ec)) return p.filename().string() + "\n"; // a plain file
@@ -1075,7 +1081,7 @@ void tree_walk(const fs::path& dir, const std::string& prefix, int depth_left,
     }
 }
 
-std::string builtin_tree(const std::vector<std::string>& args) {
+std::string builtin_tree(const std::vector<std::string>& args, const fs::path& base) {
     std::string path;
     bool have_path = false;
     int depth = 1000000; // effectively unlimited unless -L is given
@@ -1101,7 +1107,7 @@ std::string builtin_tree(const std::vector<std::string>& args) {
     if (!have_path) path = ".";
     fs::path p;
     std::string err;
-    if (!resolve_in_sandbox(path, p, err)) return err;
+    if (!resolve_in_sandbox(path, p, err, base)) return err;
     std::error_code ec;
     if (!fs::exists(p, ec)) return "ERROR: tree: path not found: " + path;
     if (!fs::is_directory(p, ec)) return path + "\n";
@@ -1118,13 +1124,18 @@ std::string builtin_tree(const std::vector<std::string>& args) {
     return cap_output(out.str());
 }
 
-std::string run_builtin_command(const std::string& name, const std::vector<std::string>& args) {
-    if (name == "wc")   return builtin_wc(args);
-    if (name == "head") return builtin_head_tail(true, args);
-    if (name == "tail") return builtin_head_tail(false, args);
-    if (name == "cat")  return builtin_cat(args);
-    if (name == "ls")   return builtin_ls(args);
-    if (name == "tree") return builtin_tree(args);
+// Built-in commands take a relative-to-base path: their target is resolved
+// against `base` (the command's `cwd`) and pinned to the sandbox, so `ls`/`cat`/
+// `tree` honour `cwd` the same way the shell-built commands do, and can also
+// take a full/relative-from-root path directly.
+std::string run_builtin_command(const std::string& name, const std::vector<std::string>& args,
+                                const fs::path& base) {
+    if (name == "wc")   return builtin_wc(args, base);
+    if (name == "head") return builtin_head_tail(true, args, base);
+    if (name == "tail") return builtin_head_tail(false, args, base);
+    if (name == "cat")  return builtin_cat(args, base);
+    if (name == "ls")   return builtin_ls(args, base);
+    if (name == "tree") return builtin_tree(args, base);
     return "ERROR: unknown built-in command '" + name + "'";
 }
 
@@ -1164,10 +1175,32 @@ std::string execute_run_command(Context& /*context*/, const json& in) {
             }
         }
 
+        // Base directory for the command (default: the sandbox root). Resolved
+        // relative to the sandbox and confined to it, so a build can be pointed
+        // at any subfolder — but never out of the tree. This is shared by BOTH
+        // the built-ins (they resolve their relative path against it) and the
+        // shell-built commands (they run with it as their working dir), so a
+        // `cwd` means the same thing in either case.
+        fs::path base = sandbox_root();
+        if (in.contains("cwd")) {
+            if (!in["cwd"].is_string()) return "ERROR: 'cwd' must be a string.";
+            const std::string raw = in["cwd"].get<std::string>();
+            std::string err;
+            if (!resolve_in_sandbox(raw, base, err)) return err;
+            std::error_code ec;
+            if (!fs::is_directory(base, ec)) {
+                return "ERROR: cwd '" + raw + "' is not an existing directory. "
+                       "Create it first (e.g. with an allow-listed build command or "
+                       "str_replace create) before running a command in it.";
+            }
+        }
+
         // Built-in cross-platform commands are reserved names and take
         // precedence over the user allow-list, so they behave the same on
         // every OS (and work on pure Windows where wc/head/etc. are absent).
-        if (is_builtin_command(name)) return run_builtin_command(name, args);
+        // Their target path resolves against `base` (they also accept a
+        // relative-from-root path directly).
+        if (is_builtin_command(name)) return run_builtin_command(name, args, base);
 
         auto cmds = merged_commands();
         auto it = cmds.find(name);
@@ -1180,23 +1213,6 @@ std::string execute_run_command(Context& /*context*/, const json& in) {
         }
         const std::string& tpl = it->second;
 
-        // Working directory for the command (default: the sandbox root). It is
-        // resolved relative to the sandbox and must stay inside it, so a build
-        // can be pointed at any subfolder — but never out of the tree.
-        fs::path cwd = sandbox_root();
-        if (in.contains("cwd")) {
-            if (!in["cwd"].is_string()) return "ERROR: 'cwd' must be a string.";
-            const std::string raw = in["cwd"].get<std::string>();
-            std::string err;
-            if (!resolve_in_sandbox(raw, cwd, err)) return err;
-            std::error_code ec;
-            if (!fs::is_directory(cwd, ec)) {
-                return "ERROR: cwd '" + raw + "' is not an existing directory. "
-                       "Create it first (e.g. with an allow-listed build command or "
-                       "str_replace create) before running a command in it.";
-            }
-        }
-
         int exit_code = 0;
         std::string output;
         std::string display;
@@ -1207,18 +1223,18 @@ std::string execute_run_command(Context& /*context*/, const json& in) {
             std::string err;
             if (!build_argv(tpl, args, argv, err)) return err;
             display = join_argv(argv);
-            output = exec_capture(argv, cwd, exit_code);
+            output = exec_capture(argv, base, exit_code);
         } else {
             // No placeholders: run through the shell (allows pipes/redirection).
             display = tpl;
-            output = run_shell(tpl, cwd, exit_code);
+            output = run_shell(tpl, base, exit_code);
         }
 
         constexpr size_t kMaxBytes = 16000;
         if (output.size() > kMaxBytes) output = output.substr(0, kMaxBytes) + "\n... [output truncated]";
 
         std::ostringstream r;
-        fs::path rel = cwd.lexically_relative(sandbox_root());
+        fs::path rel = base.lexically_relative(sandbox_root());
         if (!rel.empty() && !rel.filename().empty()) {
             r << "working dir: " << rel.string() << "\n";
         }
@@ -1319,8 +1335,10 @@ std::vector<ToolSpec> builtin_tools() {
         "them (%* receives all remaining values); a %p1-style placeholder is a path "
         "argument that must stay inside the working directory. Pass 'cwd' to run the "
         "command in a subdirectory of the working folder (e.g. to build in a "
-        "subfolder); it is confined to the working directory. Returns the command's "
-        "output.";
+        "subfolder); it is confined to the working directory. For the built-in "
+        "commands it also sets the folder their path is resolved from, so 'ls foo' "
+        "with 'cwd sub' lists 'sub/foo' (or just pass the explicit path). Returns "
+        "the command's output.";
     run.parameters = {
         {"type", "object"},
         {"properties", {
@@ -1332,7 +1350,7 @@ std::vector<ToolSpec> builtin_tools() {
             }},
             {"cwd", {
                 {"type", "string"},
-                {"description", "Optional directory to run the command in, relative to (or absolute within) the working directory. Must exist and stay inside the working directory. Use to build in subfolders. Defaults to the working directory."}
+                {"description", "Optional directory to run the command in, relative to (or absolute within) the working directory. Must exist and stay inside the working directory. Use to build in subfolders, or as the folder a built-in command's relative path is resolved from. Defaults to the working directory."}
             }},
         }},
         {"required", {"name"}},

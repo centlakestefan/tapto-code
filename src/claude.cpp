@@ -485,13 +485,20 @@ std::string ClaudeClient::chat(Context& context, const std::string& user_message
 
     ui::end_status();
 
-    // Collect the assistant's final text reply.
+    // Collect the assistant's final text reply. Fall back to the thinking
+    // blocks if the model emitted no text (a thinking model that answers
+    // entirely in reasoning — e.g. a /compact summary request) matching the
+    // OpenAI backend's extraction, so no summary is silently dropped.
     std::string reply;
+    std::string thinking;
     for (const auto& block : response["content"]) {
         if (block.value("type", std::string()) == "text") {
             reply += block.value("text", std::string());
+        } else if (block.value("type", std::string()) == "thinking") {
+            thinking += block.value("thinking", std::string());
         }
     }
+    if (reply.empty() && !thinking.empty()) reply = thinking;
     if (response.value("stop_reason", std::string()) == "max_tokens") {
         reply += "\n[truncated: hit max output tokens - raise max-output-tokens]";
     }

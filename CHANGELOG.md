@@ -39,8 +39,9 @@ carries everything else.
 - `run_command` gains an optional `cwd`: run the chosen command in a subdirectory
   of the working folder (e.g. to build in a subfolder). It is resolved against the
   working directory and confined to that subtree, so it can never escape it, and a
-  missing directory is refused with a clear error. Built-in commands are unaffected
-  — they take explicit paths.
+  missing directory is refused with a clear error. It also works for the built-in
+  commands (wc/head/tail/cat/ls/tree): a relative path in `args` is resolved
+  against `cwd`, so `ls` with `cwd sub` and `ls sub` both list that folder.
 
 ### Changed
 
@@ -57,6 +58,13 @@ carries everything else.
   `"`, `&`, `|`, `<`, `>`, `^`, `%` or a newline. The line was quoted for
   `CreateProcess`, which `cmd.exe` does not honour, so a quote in a value could
   break out and run extra commands.
+- `/compact` no longer discards a session when the summarization comes back
+  empty. Thinking models (Claude, Gemini) can return the summary inside their
+  reasoning/thought blocks, which the reply extraction then dropped — reseeding
+  the conversation with an empty note so the model knew nothing of the session.
+  The text reply now falls back to the model's reasoning (as the openai dialect
+  already did), and if no summary is produced at all the previous conversation
+  is kept rather than replaced.
 
 ## [0.2.0] — 2026-08-14
 
