@@ -166,6 +166,8 @@ inline std::string getToolDisplayName(const std::string& tool_name, const nlohma
             for (const auto& a : input["args"]) {
                 if (a.is_string()) label += " " + a.get<std::string>();
             }
+        } else if (input.contains("path") && input["path"].is_string()) {
+            label += " " + input["path"].get<std::string>();
         }
         return label;
     }

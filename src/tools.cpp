@@ -1173,6 +1173,11 @@ std::string execute_run_command(Context& /*context*/, const json& in) {
             for (const auto& a : in["args"]) {
                 args.push_back(a.is_string() ? a.get<std::string>() : a.dump());
             }
+        } else if (in.contains("path") && in["path"].is_string()) {
+            // Graceful fallback: the model sometimes passes the target as a
+            // top-level `path` (confusing run_command with the text editor,
+            // which uses `path`). Treat it as the sole argument.
+            args.push_back(in["path"].get<std::string>());
         }
 
         // Base directory for the command (default: the sandbox root). Resolved
@@ -1330,15 +1335,15 @@ std::vector<ToolSpec> builtin_tools() {
         "Windows: wc [-l|-w|-c] <file>, head [-n N] <file>, tail [-n N] <file>, "
         "cat <file>, ls [path], tree [path] [-L depth]; and (2) the project's "
         "pre-approved commands configured via 'tapto-code command add'. Arbitrary "
-        "shell commands are NOT allowed. Pass a command's arguments via 'args' (in "
-        "order). For configured commands with %1, %2, ... placeholders, args fill "
-        "them (%* receives all remaining values); a %p1-style placeholder is a path "
-        "argument that must stay inside the working directory. Pass 'cwd' to run the "
+        "shell commands are NOT allowed. ALL command-specific arguments (file paths, "
+        "flags, values for %1/%2 placeholders) go in the 'args' array, in order — "
+        "there is no separate 'path' parameter; e.g. list a directory with "
+        "{\"name\":\"ls\",\"args\":[\"driver\"]} or pass a file to cat with "
+        "{\"name\":\"cat\",\"args\":[\"src/main.cpp\"]}. Pass 'cwd' to run the "
         "command in a subdirectory of the working folder (e.g. to build in a "
         "subfolder); it is confined to the working directory. For the built-in "
-        "commands it also sets the folder their path is resolved from, so 'ls foo' "
-        "with 'cwd sub' lists 'sub/foo' (or just pass the explicit path). Returns "
-        "the command's output.";
+        "commands it also sets the folder their path is resolved from, so 'ls' with "
+        "args ['foo'] and cwd 'sub' lists 'sub/foo'. Returns the command's output.";
     run.parameters = {
         {"type", "object"},
         {"properties", {

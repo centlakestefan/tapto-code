@@ -84,6 +84,13 @@ ToolExecutorFn find_editor(Context& ctx) {
     return nullptr;
 }
 
+ToolExecutorFn find_run_command(Context& ctx) {
+    for (const auto& t : ctx.tools) {
+        if (t.name == "run_command") return t.executor;
+    }
+    return nullptr;
+}
+
 } // namespace
 
 int main() {
@@ -314,6 +321,37 @@ int main() {
                            {"path", test_path(".gitignore")},
                            {"file_text", "build/\n"}});
         CHECK_EQ(r, "OK");
+    }
+
+    // --- run_command `path` fallback ---------------------------------------
+    // The model sometimes sends `{"name":"ls","path":"driver"}` instead of
+    // `{"name":"ls","args":["driver"]}` (conflating with the text editor). The
+    // handler should treat the stray `path` field as the sole argument.
+    {
+        ToolExecutorFn run = find_run_command(ctx);
+        CHECK_TRUE(run != nullptr);
+
+        // Make a test subdirectory with a known file.
+        fs::create_directories(test_path("driver"), ec);
+        write_raw(test_path("driver/fake.c"), "void lmdb_open(){}\n");
+
+        // path as a top-level field → should work like args: ["driver"]
+        std::string r1 = run(ctx, json{{"name", "ls"}, {"path", test_path("driver")}});
+        CHECK_TRUE(r1.find("fake.c") != std::string::npos);
+
+        // args still works the same way
+        std::string r2 = run(ctx, json{{"name", "ls"}, {"args", {test_path("driver")}}});
+        CHECK_TRUE(r2.find("fake.c") != std::string::npos);
+
+        // When both are present, args wins (path is ignored)
+        write_raw(test_path("otherfile.txt"), "x\n");
+        std::string r3 = run(ctx, json{{"name", "ls"},
+                                       {"path", test_path("driver")},
+                                       {"args", {test_path("driver")}}});
+        CHECK_TRUE(r3.find("fake.c") != std::string::npos);
+
+        fs::remove_all(kDir, ec);
+        fs::create_directories(kDir, ec);
     }
 
     fs::remove_all(kDir, ec);
