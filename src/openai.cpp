@@ -21,19 +21,22 @@ namespace ui = tapto::ui;
 
 namespace {
 
-/// <summary>Reasoning-capable models served via OpenAI-compatible adapters
-/// (llama.cpp, vLLM, sglang with the deepseek/qwen reasoning template, etc.)
-/// split chain-of-thought into a separate `reasoning_content` field on the
-/// assistant message. Returns that field as a string when present and
-/// non-empty, otherwise an empty string.</summary>
+/// <summary>Reasoning-capable models emit chain-of-thought in a separate
+/// field on the assistant message. OpenAI o-series / gpt-5 use the field
+/// name `reasoning`; most OpenAI-compatible adapters (llama.cpp, vLLM,
+/// DeepSeek, Qwen, sglang, …) use `reasoning_content`. Tries `reasoning`
+/// first, then falls back to `reasoning_content`. Returns an empty string
+/// when neither field is present or non-empty.</summary>
 std::string extractReasoning(const json& message) {
-    if (!message.contains("reasoning_content") || message["reasoning_content"].is_null()) {
-        return "";
+    // OpenAI-native field (o-series, gpt-5)
+    if (message.contains("reasoning") && message["reasoning"].is_string()) {
+        return message["reasoning"].get<std::string>();
     }
-    if (!message["reasoning_content"].is_string()) {
-        return "";
+    // OpenAI-compatible adapter field (DeepSeek, llama.cpp, vLLM, …)
+    if (message.contains("reasoning_content") && message["reasoning_content"].is_string()) {
+        return message["reasoning_content"].get<std::string>();
     }
-    return message["reasoning_content"].get<std::string>();
+    return "";
 }
 
 /// <summary>Strip Harmony / channel-style special tokens from user-visible
@@ -83,10 +86,12 @@ std::string extractContent(const json& message) {
 }
 
 /// <summary>Strip per-turn-only fields from an assistant message before
-/// echoing it back to the server in conversation history. `reasoning_content`
-/// is chain-of-thought scratch that some providers (DeepSeek's hosted API)
-/// reject when sent back, and all providers waste tokens reading it.</summary>
+/// echoing it back to the server in conversation history. `reasoning`
+/// (OpenAI o-series) and `reasoning_content` (most adapters) are
+/// chain-of-thought scratch that some providers reject when sent back,
+/// and all providers waste tokens reading them.</summary>
 json historyMessage(json message) {
+    message.erase("reasoning");
     message.erase("reasoning_content");
     return message;
 }
