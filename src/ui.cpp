@@ -788,7 +788,7 @@ void print_banner(const std::string& version,
 
     // Hints
     std::cout << kDim
-              << "  ESC to interrupt  │  /clear  /compact  /env  /list-commands  /add-command <name> <cmd>  /help  /exit"
+              << "  ESC to interrupt  │  /clear  /compact  /cot on|off  /env  /list-commands  /add-command <name> <cmd>  /help  /exit"
               << kReset << "\n\n";
 }
 
@@ -814,6 +814,8 @@ void print_help(const std::vector<std::string>& tool_names) {
               << kBold << "  Slash commands\n" << kReset
               << "    /clear                        clear conversation history\n"
               << "    /compact [focus]              summarize and restart from the summary\n"
+              << "    /cot on|off                   show / set chain-of-thought output (on|off)\n"
+              << "    /effort [value|off]           show / set OpenAI reasoning-effort (low|medium|high|...)\n"
               << "    /env                          show session environment (directory, model, history)\n"
               << "    /list-commands                list allow-listed shell commands\n"
               << "    /add-command <name> <cmd>     add a new allow-listed command\n"

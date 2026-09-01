@@ -128,6 +128,21 @@ endif()
 
 add_test(NAME edits COMMAND test-edits)
 
+# Config store: set/unset/save must preserve comments, blank lines, and ordering
+# a user added by hand, rather than rebuilding the file from its key/value table.
+add_executable(test-config
+  tests/test_config.cpp
+  src/config.cpp
+)
+target_include_directories(test-config PRIVATE include)
+if(MSVC)
+  target_compile_options(test-config PRIVATE /W4 /EHsc /utf-8)
+else()
+  target_compile_options(test-config PRIVATE -Wall -Wextra)
+endif()
+
+add_test(NAME config COMMAND test-config)
+
 # /compact's input trimmer (AiBackend::buildTrimmedHistoryForSummary) is
 # header-only against the base class, so this target compiles a single test
 # file that drives it through a stub backend — no providers, keys, or network.

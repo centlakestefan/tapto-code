@@ -1031,6 +1031,133 @@ int cmd_chat(const std::string& requested_provider) {
             continue;
         }
 
+        // Toggle CoT (chain-of-thought / intermediate reasoning) output.
+        //   /cot            show the current state
+        //   /cot on|off     set the preference and persist it to the global config
+        // The guard matches "/cot" exactly or "/cot" followed by whitespace, so
+        // an unrelated word like "/cotton" falls through to the model as usual.
+        if (line.rfind("/cot", 0) == 0 && (line.size() == 4 || line[4] == ' ' || line[4] == '\t')) {
+            std::istringstream cotiss(line);
+            std::string cotword, cotarg;
+            cotiss >> cotword;
+            std::getline(cotiss, cotarg);
+            size_t cotfirst = cotarg.find_first_not_of(" \t");
+            cotarg = (cotfirst == std::string::npos) ? std::string() : cotarg.substr(cotfirst);
+            std::transform(cotarg.begin(), cotarg.end(), cotarg.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+            // No argument: report the current state instead of changing it.
+            if (cotarg.empty()) {
+                ui::print_line("CoT output: " + std::string(ai_config.printCot() ? "on" : "off"));
+                continue;
+            }
+
+            const bool want_on  = (cotarg == "on"  || cotarg == "true"  || cotarg == "1"  || cotarg == "yes");
+            const bool want_off = (cotarg == "off" || cotarg == "false" || cotarg == "0"  || cotarg == "no");
+            if (!want_on && !want_off) {
+                ui::print_line("usage: /cot on|off   (or just /cot to show the current state)");
+                continue;
+            }
+
+            // Apply immediately for this session, then persist so the choice
+            // survives restart. The in-session flag always wins; the write is
+            // best-effort so a full session-level override never blocks.
+            ai_config.setPrintCot(want_on);
+            if (set_global("print-cot", want_on ? "true" : "false")) {
+                ui::print_line("CoT output " + std::string(want_on ? "on" : "off") +
+                               " (saved to " + config_path(Level::Global).string() + ")");
+            } else {
+                ui::print_line("CoT output " + std::string(want_on ? "on" : "off") +
+                               " for this session (could not be saved to global config)");
+            }
+            continue;
+        }
+
+        // Set the OpenAI reasoning-effort hint for the current provider. The
+        // value is passed through unvalidated: which tokens an endpoint accepts
+        // is the endpoint's business (OpenAI: low/medium/high; gpt-5: minimal,
+        // low, medium, high; local adapters: whatever they document).
+        //   /effort             show the current state
+        //   /effort <value>     apply in-session and persist to <name>-reasoning-effort
+        //   /effort off         clear the value (server picks its own default)
+        // The guard matches "/effort" exactly or "/effort" followed by whitespace,
+        // so an unrelated word like "/effortless" still goes to the model.
+        // Persists to the local scope (per-project), matching /add-command and
+        // letting each project choose how hard the model thinks.
+        if (line.rfind("/effort", 0) == 0 &&
+            (line.size() == 7 || line[7] == ' ' || line[7] == '\t')) {
+            std::istringstream efiss(line);
+            std::string efword, efarg;
+            efiss >> efword;
+            std::getline(efiss, efarg);
+            size_t efirst = efarg.find_first_not_of(" \t");
+            efarg = (efirst == std::string::npos) ? std::string() : efarg.substr(efirst);
+            std::transform(efarg.begin(), efarg.end(), efarg.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+            const std::string key = provider->name + "-reasoning-effort";
+
+            // No argument: report the current in-session state.
+            if (efarg.empty()) {
+                const std::string cur = ai_config.openaiReasoningEffort();
+                ui::print_line(key + " = " +
+                               (cur.empty() ? std::string("(unset — server picks its default)") : cur));
+                continue;
+            }
+
+            // Off aliases clear the value so the request omits the field and
+            // the server uses its own default. Accept a few natural synonyms.
+            const bool is_off = (efarg == "off"     || efarg == "none"    ||
+                                 efarg == "clear"   || efarg == "reset"   ||
+                                 efarg == "default" || efarg == "auto"    ||
+                                 efarg == "unset"   || efarg == "inherit" ||
+                                 efarg == "-");
+
+            if (is_off) {
+                // Apply in-session immediately, then try to unset the local key.
+                ai_config.setOpenaiReasoningEffort("");
+                try {
+                    auto path = config_path(Level::Local);
+                    Config cfg = Config::load(path);
+                    if (cfg.unset(key)) {
+                        cfg.save(path);
+                        ui::print_line("reasoning-effort cleared (removed " + key +
+                                       " from " + path.string() + ")");
+                    } else {
+                        ui::print_line("reasoning-effort cleared for this session");
+                    }
+                } catch (const std::exception& e) {
+                    ui::print_line(std::string("reasoning-effort cleared for this session (") +
+                                   e.what() + ")");
+                }
+                continue;
+            }
+
+            // A value is settable only for the openai dialect — the other two
+            // backends never send the field, so accepting the value here would
+            // make it look like it took effect when it did not.
+            if (provider->dialect != "openai") {
+                ui::print_error("/effort only applies to the openai dialect; '" +
+                                provider->name + "' speaks " + provider->dialect);
+                continue;
+            }
+
+            // Apply in-session, then persist to the local config.
+            ai_config.setOpenaiReasoningEffort(efarg);
+            const std::string path_str = config_path(Level::Local).string();
+            try {
+                auto path = config_path(Level::Local);
+                Config cfg = Config::load(path);
+                cfg.set(key, efarg);
+                cfg.save(path);
+                ui::print_line(key + " = " + efarg + " (saved to " + path_str + ")");
+            } catch (const std::exception& e) {
+                ui::print_line(key + " = " + efarg +
+                               " for this session (could not save: " + e.what() + ")");
+            }
+            continue;
+        }
+
         // Compact the conversation: ask the model to summarize the discussion
         // so far, then restart from that summary. Optional focus hint:
         //   /compact keep the CMake changes in mind
