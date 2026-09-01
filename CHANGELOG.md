@@ -40,9 +40,16 @@ carries everything else.
   compact note, freeing context-window space on long sessions. ([85d1c0c])
 - Press `ESC` to interrupt the model mid-response; the partial output is kept
   and control returns to you. ([8649d5c])
+- `/cot on|off` — toggle (and persist to the global config) the model's
+  chain-of-thought / intermediate output; default is on. `/cot` with no
+  argument reports the current state. ([af76f98])
 - `<name>-reasoning-effort` config key: the openai dialect sends it as
   `reasoning_effort` on every request, for gpt-5/o-series and for
   OpenAI-compatible servers that accept the same field.
+- `/effort <value>` — set the openai-dialect `reasoning_effort` for the
+  session and persist it to the local (per-project) scope; `/effort off`
+  clears it so the server uses its own default. Restricted to the openai
+  dialect — the other two backends never send the field. ([af76f98])
 - `run_command` gains an optional `cwd`: run the chosen command in a subdirectory
   of the working folder (e.g. to build in a subfolder). It is resolved against the
   working directory and confined to that subtree, so it can never escape it, and a
@@ -87,6 +94,10 @@ carries everything else.
   The text reply now falls back to the model's reasoning (as the openai dialect
   already did), and if no summary is produced at all the previous conversation
   is kept rather than replaced.
+- `/cot on|off` (and any config write) no longer stripped hand-written
+  comments and blank lines from the config file on save. The store now keeps
+  the file's raw lines and edits only the specific key's line, so everything
+  else is left exactly as written. ([af76f98])
 
 ## [0.2.0] — 2026-08-14
 
@@ -152,3 +163,4 @@ project directory, against Claude, OpenAI or Gemini. ([d9ac02c])
 [9a829f0]: https://github.com/centlakestefan/tapto-code/commit/9a829f0
 [b3417aa]: https://github.com/centlakestefan/tapto-code/commit/b3417aa
 [e4ed224]: https://github.com/centlakestefan/tapto-code/commit/e4ed224
+[af76f98]: https://github.com/centlakestefan/tapto-code/commit/af76f98
