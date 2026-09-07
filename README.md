@@ -119,8 +119,26 @@ It prints a `>` prompt, reads a line, sends it to the provider, prints the
 reply, and repeats. Type `/exit` (or Ctrl-D) to quit.
 
 In-session slash commands: `/clear` (reset the conversation — useful to recover
-after filling the model's context window), `/list-commands`, and
-`/add-command <name> <command...>`.
+after filling the model's context window), `/compact`, `/env`,
+`/list-commands`, `/add-command <name> <command...>`, and the folder commands
+below.
+
+**Reading beyond the working directory.** The file tools are confined to the
+directory tapto-code was started in. To let the model read something else — a
+library the project depends on, a sibling repository — grant it read-only:
+
+```
+/add-folder C:\proj\libfoo
+/list-folders
+/remove-folder libfoo
+```
+
+While a folder is granted the model gets four more tools — `list_folders`,
+`list_files`, `read_file` and `search_files` — that list, read and search under
+the granted roots and nothing else; they cannot create or change a file. Files
+are addressed as `<label>/<relative path>`, where the label is the folder's last
+path component (shown on grant and by `/list-folders`). A grant lasts for the
+session. The same commands exist in tapto-word.
 
 **First run:** if no provider/api-key is configured, tapto-code prompts for them
 interactively and saves them to the global (`~/.tapto`) config, then starts

@@ -53,6 +53,12 @@ carries everything else.
   and 300). The reply is not streamed, so `read-timeout` bounds the whole
   generation: raise it for a slow local model. Both keys are shared with
   tapto-word, which already documents them and points users here to set them.
+- `/add-folder <path>`, `/remove-folder <path|label>` and `/list-folders`:
+  grant the model read-only access to folders outside the working directory.
+  While something is granted the model gets `list_folders`, `list_files`,
+  `read_file` and `search_files`, confined to the granted roots and unable to
+  change a file; the tools and the prompt paragraph naming the roots come
+  from libtapto and are the same ones tapto-word offers.
 
 ### Changed
 

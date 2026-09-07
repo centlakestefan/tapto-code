@@ -3,6 +3,7 @@
 
 #include "tapto/commands.h"
 #include "tapto/config.h"
+#include "tapto/fstools.h"
 #include "tapto/paths.h"
 #include "tapto/provider.h"
 #include "tapto/secret.h"
@@ -398,6 +399,30 @@ std::string trim(const std::string& s) {
     return s.substr(b, e - b + 1);
 }
 
+// A slash-command argument with its surrounding quotes removed, so a path
+// with spaces can be pasted as the shell shows it.
+std::string unquote(std::string s) {
+    s = trim(s);
+    if (s.size() >= 2 && ((s.front() == '"' && s.back() == '"') ||
+                          (s.front() == '\'' && s.back() == '\''))) {
+        s = s.substr(1, s.size() - 2);
+    }
+    return s;
+}
+
+// What /list-folders prints, and what the other folder commands append.
+std::string list_folders_text(const FolderSet& folders) {
+    if (folders.empty()) return "No folders are granted. Grant one with /add-folder <path>.";
+    std::ostringstream out;
+    out << "The model can read these folders:\n";
+    for (const auto& f : folders.folders()) {
+        out << "  " << f.label << "  ->  " << f.root.generic_string() << "\n";
+    }
+    std::string s = out.str();
+    if (!s.empty() && s.back() == '\n') s.pop_back();
+    return s;
+}
+
 // Write a key to the global (user) config scope.
 bool set_global(const std::string& key, const std::string& value) {
     try {
@@ -786,11 +811,27 @@ int cmd_chat(const std::string& requested_provider) {
     }
 
     client->start();
-    client->setSystemPrompt(resolve_system_prompt());
 
-    // Register the file tools (editor + search) for this chat session.
+    // The file tools (editor + search) work inside the working directory. On
+    // top of those the user can grant other folders read-only, with
+    // /add-folder: the library's list_files / read_file / search_files then
+    // join the table, and the system prompt names what is granted. Both change
+    // the request prefix, so they are rebuilt together and only on a change --
+    // the cache misses once per grant, not per turn.
     Context context;
-    context.tools = builtin_tools();
+    FolderSet folders;
+    auto rebuild_tools_and_prompt = [&]() {
+        context.tools = builtin_tools();
+        if (!folders.empty()) {
+            for (auto& t : folder_tools(folders)) context.tools.push_back(std::move(t));
+        }
+        std::string prompt = resolve_system_prompt();
+        if (const std::string extra = folder_prompt(folders); !extra.empty()) {
+            prompt += "\n\n" + extra;
+        }
+        client->setSystemPrompt(prompt);
+    };
+    rebuild_tools_and_prompt();
 
     // ESC-abort cancellation token (lives for the entire chat session). The
     // poll is installed once and runs inline in this thread at each tool-loop
@@ -954,6 +995,62 @@ int cmd_chat(const std::string& requested_provider) {
                 << "\n";
             continue;
         }
+        // Read-only folder access. The file tools stay pinned to the working
+        // directory; these grant the model other folders to list, read and
+        // search -- a library the project depends on, a sibling repository --
+        // and nothing more. The labels the model addresses them by are shown
+        // on grant and by /list-folders. Same commands and wording as
+        // tapto-word.
+        if (line == "/list-folders") {
+            ui::print_line(list_folders_text(folders));
+            continue;
+        }
+        if (line.rfind("/add-folder", 0) == 0) {
+            const std::string arg = unquote(line.substr(std::string("/add-folder").size()));
+            if (arg.empty()) {
+                ui::print_line("usage: /add-folder <path>");
+                continue;
+            }
+            const size_t before = folders.folders().size();
+            std::string label;
+            const std::string err = folders.add(arg, &label);
+            if (!err.empty()) {
+                ui::print_error(err);
+                continue;
+            }
+            if (folders.folders().size() == before) {
+                ui::print_line("Already granted, as '" + label + "'.");
+                continue;
+            }
+            rebuild_tools_and_prompt();
+            ui::print_line("Granted read-only access to " + arg + " as '" + label +
+                           "'. The model can now list, read and search it; it cannot change "
+                           "anything. " +
+                           (folders.folders().size() == 1
+                                ? std::string("Revoke with /remove-folder ") + label + "."
+                                : "Files are addressed as <label>/<path>; /list-folders "
+                                  "shows the labels."));
+            continue;
+        }
+        if (line.rfind("/remove-folder", 0) == 0) {
+            const std::string arg = unquote(line.substr(std::string("/remove-folder").size()));
+            if (arg.empty()) {
+                ui::print_line("usage: /remove-folder <path or label>\n\n" +
+                               list_folders_text(folders));
+                continue;
+            }
+            if (!folders.remove(arg)) {
+                ui::print_line("'" + arg + "' is not a granted folder.\n\n" +
+                               list_folders_text(folders));
+                continue;
+            }
+            rebuild_tools_and_prompt();
+            ui::print_line("Revoked '" + arg + "'. " +
+                           (folders.empty() ? std::string("The model has no folder access now.")
+                                            : "\n" + list_folders_text(folders)));
+            continue;
+        }
+
         if (line.rfind("/add-command", 0) == 0) {
             std::istringstream iss(line);
             std::string slash, name;
