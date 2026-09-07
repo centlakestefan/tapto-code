@@ -3,7 +3,9 @@
 
 #include "tapto/commands.h"
 #include "tapto/config.h"
+#include "tapto/fstools.h"
 #include "tapto/paths.h"
+#include "tapto/provider.h"
 #include "tapto/secret.h"
 #include "tapto/tools.h"
 
@@ -13,7 +15,7 @@
 #include "tapto/aiconfig.h"
 #include "tapto/cancel.h"
 #include "tapto/log.h"
-#include "tapto/ui.h"
+#include "tapto/termui.h"
 #include "tapto/version.h"
 
 #include <nlohmann/json.hpp>
@@ -79,7 +81,9 @@ const char* kUsage =
     "\n"
     "Chat config keys: provider (which provider block to use), max-output-tokens\n"
     "  (optional), max-tool-iterations (optional, default 200), print-cot\n"
-    "  (optional, default true), system-prompt, trace-file, and per provider\n"
+    "  (optional, default true), system-prompt, trace-file, connection-timeout\n"
+    "  (seconds, default 30), read-timeout (seconds to wait for the whole answer,\n"
+    "  default 300; raise it for a slow local model), and per provider\n"
     "  <name>-reasoning-effort (openai dialect only: low, medium, high, ...)\n"
     "\n"
     "A provider is a named block of keys, so several backends -- including two\n"
@@ -119,39 +123,6 @@ struct Args {
     std::vector<std::string> positional; // [0]=subcommand, [1]=key, [2]=value
 };
 
-struct EffectiveEntry {
-    std::string key;
-    std::string value;
-    Level origin;
-};
-
-// Merge all scopes lowest-to-highest so later scopes override earlier ones,
-// while preserving first-seen ordering of keys.
-std::vector<EffectiveEntry> effective_config() {
-    std::vector<EffectiveEntry> merged;
-
-    auto apply = [&](Level level) {
-        Config cfg = Config::load(config_path(level));
-        for (const auto& entry : cfg.entries()) {
-            bool found = false;
-            for (auto& existing : merged) {
-                if (existing.key == entry.first) {
-                    existing.value = entry.second;
-                    existing.origin = level;
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) merged.push_back({entry.first, entry.second, level});
-        }
-    };
-
-    apply(Level::System);
-    apply(Level::Global);
-    apply(Level::Local);
-    return merged;
-}
-
 // True if `key` ends with `suffix`, with at least one character before it.
 bool has_suffix(const std::string& key, const std::string& suffix) {
     return key.size() > suffix.size() &&
@@ -187,6 +158,7 @@ bool is_supported_config_key(const std::string& key) {
     static const char* kKeys[] = {
         "provider", "provider-type", "api-key", "provider-url", "model",
         "max-output-tokens", "max-tool-iterations", "system-prompt", "trace-file", "print-cot",
+        "connection-timeout", "read-timeout",
         "reasoning-effort",
     };
     for (const char* k : kKeys) {
@@ -201,6 +173,7 @@ bool is_supported_config_key(const std::string& key) {
 const char* kSupportedKeysHelp =
     "provider, provider-url, model, api-key, "
     "max-output-tokens, max-tool-iterations, system-prompt, trace-file, print-cot, "
+    "connection-timeout, read-timeout, "
     "and per provider <name>-provider-type, <name>-provider-url, <name>-model, "
     "<name>-api-key, <name>-reasoning-effort";
 
@@ -404,206 +377,6 @@ int cmd_command(std::optional<Level> level, const std::vector<std::string>& rest
     return 2;
 }
 
-// Look up a config key's effective value across all scopes. A key present but
-// empty counts as unset, so `model =` falls back to the default instead of
-// asking the provider for a model with no name.
-std::optional<std::string> get_effective(const std::string& key) {
-    for (const auto& entry : effective_config()) {
-        if (entry.key == key) {
-            if (entry.value.empty()) return std::nullopt;
-            return entry.value;
-        }
-    }
-    return std::nullopt;
-}
-
-// ---------------------------------------------------------------------------
-// Providers
-//
-// A provider has a *name* and a *dialect*, and they are not the same thing.
-// The name selects a block of config keys and is free-form — qwen36, gemma4,
-// work-claude. The dialect is one of the three request shapes this program can
-// speak, named by that block's `<name>-provider-type` key:
-//
-//   qwen36-provider-type = openai         gemma4-provider-type = openai
-//   qwen36-provider-url  = http://a:8000  gemma4-provider-url  = http://b:8081
-//   qwen36-model         = Qwen3-VL-30B   gemma4-model         = gemma-3-27b
-//   qwen36-api-key       = local          gemma4-api-key       = local
-//
-// Two local servers speaking the same API can therefore be told apart, which
-// they could not when the name *was* the dialect and one store held at most one
-// configuration per vendor. The config store is shared with tapto-vnc, which
-// reads the same blocks.
-// ---------------------------------------------------------------------------
-
-// The request shapes this program can speak. Used as a provider name, each one
-// means its own dialect with that vendor's defaults, so `claude`, `openai` and
-// `gemini` need no block at all.
-bool is_dialect(const std::string& s) {
-    return s == "claude" || s == "openai" || s == "gemini";
-}
-
-std::string default_url(const std::string& dialect) {
-    if (dialect == "claude") return "https://api.anthropic.com";
-    if (dialect == "openai") return "https://api.openai.com";
-    if (dialect == "gemini") return "https://generativelanguage.googleapis.com";
-    return "";
-}
-
-std::string default_model(const std::string& dialect) {
-    if (dialect == "claude") return "claude-sonnet-4-6";
-    if (dialect == "openai") return "gpt-4o";
-    if (dialect == "gemini") return "gemini-2.0-flash";
-    return "";
-}
-
-const char* api_key_env_var(const std::string& dialect) {
-    if (dialect == "claude") return "ANTHROPIC_API_KEY";
-    if (dialect == "openai") return "OPENAI_API_KEY";
-    if (dialect == "gemini") return "GEMINI_API_KEY";
-    return "";
-}
-
-std::optional<std::string> env_value(const char* name) {
-    if (!name || !*name) return std::nullopt;
-#ifdef _MSC_VER
-#pragma warning(push)
-#pragma warning(disable : 4996) // std::getenv is the portable, intended call here
-#endif
-    const char* v = std::getenv(name);
-#ifdef _MSC_VER
-#pragma warning(pop)
-#endif
-    if (v && *v) return std::string(v);
-    return std::nullopt;
-}
-
-// Every provider block the store defines, found by its `<name>-provider-type`
-// key. Only used to name the alternatives when someone asks for a provider that
-// isn't configured — a list of what exists is worth more than a list of what is
-// allowed.
-std::vector<std::string> configured_provider_names() {
-    std::vector<std::string> names;
-    for (const auto& entry : effective_config()) {
-        if (entry.value.empty()) continue; // an empty value counts as unset
-        std::string name = provider_name_of_key(entry.key, "provider-type");
-        if (!name.empty()) names.push_back(std::move(name));
-    }
-    return names;
-}
-
-// The provider used when none is named on the command line. `provider-type`
-// doubles as the legacy spelling: a store saying `provider-type = claude` names
-// the block "claude", whose dialect is claude because that is also a dialect
-// name, so nothing needs rewriting.
-std::optional<std::string> default_provider_name() {
-    if (auto v = get_effective("provider")) return v;
-    return get_effective("provider-type");
-}
-
-// The dialect a provider name resolves to: its block's `-provider-type`, or the
-// name itself when that is a dialect. Empty when the name isn't configured.
-std::string provider_dialect(const std::string& name) {
-    if (auto v = get_effective(name + "-provider-type")) return *v;
-    return is_dialect(name) ? name : "";
-}
-
-// Resolve the API key for a provider block. The block's own key comes first: it
-// is the most specific thing the user wrote, it is the only thing that can be
-// right when two blocks share a dialect, and — more sharply — an environment
-// variable winning here would send a real vendor key to whatever
-// `<name>-provider-url` points at, which for a local server means writing it
-// into somebody's log. The plaintext warning is emitted when the key is
-// written, not on use.
-//
-// A configured value may name where the key lives — `env:`, `cmd:`, `wincred:`
-// — instead of being the key; see tapto/secret.h. The vendor environment
-// variable is a secret in its own right, never a reference, so it is taken
-// verbatim.
-Secret resolve_api_key(const std::string& name, const std::string& dialect) {
-    if (auto v = get_effective(name + "-api-key")) return resolve_secret(*v);
-    if (auto v = env_value(api_key_env_var(dialect))) {
-        Secret s;
-        s.value = *v;
-        return s;
-    }
-    // The unscoped api-key belongs to the default provider only; otherwise one
-    // vendor's key would be handed to another.
-    if (auto def = default_provider_name(); def && *def == name) {
-        if (auto v = get_effective("api-key")) return resolve_secret(*v);
-    }
-    return Secret{};
-}
-
-// A provider block resolved into everything a chat session needs.
-struct ResolvedProvider {
-    std::string name;    // the config block, e.g. "qwen36"
-    std::string dialect; // claude | openai | gemini
-    std::string url;
-    std::string model;
-    std::string reasoning_effort; // empty when unset; openai dialect only
-    Secret api_key;      // unresolved if none is configured; the caller decides
-};
-
-// Resolve a provider name (empty for the configured default). Prints its own
-// error and returns nullopt when the name names no dialect this program speaks.
-std::optional<ResolvedProvider> resolve_provider(const std::string& requested) {
-    const std::string def = default_provider_name().value_or("claude");
-
-    ResolvedProvider p;
-    p.name = requested.empty() ? def : requested;
-    p.dialect = provider_dialect(p.name);
-
-    if (p.dialect.empty()) {
-        std::string msg = "unknown provider '" + p.name + "'";
-        auto names = configured_provider_names();
-        if (!names.empty()) {
-            msg += "; configured:";
-            for (const auto& n : names) msg += " " + n;
-        }
-        msg += ".\n  name one by setting '" + p.name +
-               "-provider-type' to claude, openai or gemini, "
-               "or use claude, openai or gemini directly";
-        ui::print_error(msg);
-        return std::nullopt;
-    }
-    if (!is_dialect(p.dialect)) {
-        ui::print_error("'" + p.name + "-provider-type' is '" + p.dialect +
-                        "'; expected claude, openai or gemini."
-                        "\n  that key names the API shape to speak, not the model");
-        return std::nullopt;
-    }
-
-    // The unscoped keys belong to the default provider only. Otherwise a local
-    // endpoint's URL and model would be sent to a hosted vendor, and vice versa.
-    const bool is_default = (p.name == def);
-    auto scoped = [&](const std::string& key) -> std::optional<std::string> {
-        if (auto v = get_effective(p.name + "-" + key)) return v;
-        if (is_default) return get_effective(key);
-        return std::nullopt;
-    };
-
-    p.url = scoped("provider-url").value_or(default_url(p.dialect));
-    p.model = scoped("model").value_or(default_model(p.dialect));
-    // The openai dialect is the only one that sends this. On a block speaking
-    // another dialect it is a mistake worth reporting, not a silent no-op.
-    p.reasoning_effort = scoped("reasoning-effort").value_or("");
-    if (!p.reasoning_effort.empty() && p.dialect != "openai") {
-        ui::print_warning("'" + p.name + "-reasoning-effort' is ignored: only the "
-                          "openai dialect sends it");
-        p.reasoning_effort.clear();
-    }
-    p.api_key = resolve_api_key(p.name, p.dialect);
-    return p;
-}
-
-// How the provider is shown to the user: the block name, plus the dialect when
-// it adds something the name doesn't already say.
-std::string provider_label(const ResolvedProvider& p) {
-    if (p.name == p.dialect) return p.name;
-    return p.name + " (" + p.dialect + ")";
-}
-
 const char* kDefaultSystemPrompt =
     "You are an experienced fullstack developer in a chat with a user. "
     "The user has started a session in a working folder. You have tools to "
@@ -624,6 +397,30 @@ std::string trim(const std::string& s) {
     if (b == std::string::npos) return "";
     size_t e = s.find_last_not_of(" \t\r\n");
     return s.substr(b, e - b + 1);
+}
+
+// A slash-command argument with its surrounding quotes removed, so a path
+// with spaces can be pasted as the shell shows it.
+std::string unquote(std::string s) {
+    s = trim(s);
+    if (s.size() >= 2 && ((s.front() == '"' && s.back() == '"') ||
+                          (s.front() == '\'' && s.back() == '\''))) {
+        s = s.substr(1, s.size() - 2);
+    }
+    return s;
+}
+
+// What /list-folders prints, and what the other folder commands append.
+std::string list_folders_text(const FolderSet& folders) {
+    if (folders.empty()) return "No folders are granted. Grant one with /add-folder <path>.";
+    std::ostringstream out;
+    out << "The model can read these folders:\n";
+    for (const auto& f : folders.folders()) {
+        out << "  " << f.label << "  ->  " << f.root.generic_string() << "\n";
+    }
+    std::string s = out.str();
+    if (!s.empty() && s.back() == '\n') s.pop_back();
+    return s;
 }
 
 // Write a key to the global (user) config scope.
@@ -973,6 +770,27 @@ int cmd_chat(const std::string& requested_provider) {
             ui::print_warning("invalid max-tool-iterations '" + *v + "', using default");
         }
     }
+    // HTTP timeouts, shared with tapto-word and tapto-vnc through the same
+    // config store. read-timeout bounds the whole (unstreamed) generation, so
+    // a local model that decodes slowly may need it raised well above the
+    // hosted-provider default; a timeout shorter than the generation retries
+    // the same request until the retry budget is gone.
+    if (auto v = get_effective("connection-timeout")) {
+        try {
+            ai_config.setConnectionTimeoutSeconds(std::stoi(*v));
+        } catch (const std::exception&) {
+            ui::print_warning("invalid connection-timeout '" + *v + "', using default");
+        }
+    }
+    if (auto v = get_effective("read-timeout")) {
+        try {
+            ai_config.setReadTimeoutSeconds(std::stoi(*v));
+        } catch (const std::exception&) {
+            ui::print_warning("invalid read-timeout '" + *v + "', using default");
+        }
+    }
+    // The openai dialect reads this one; Claude's thinking depth is its own
+    // knob (AiConfig::effort), left at the server default here.
     ai_config.setOpenaiReasoningEffort(provider->reasoning_effort);
     if (auto v = get_effective("print-cot")) {
         // Default is on; only "false"/"0"/"off"/"no" (case-insensitive) disable it.
@@ -993,11 +811,27 @@ int cmd_chat(const std::string& requested_provider) {
     }
 
     client->start();
-    client->setSystemPrompt(resolve_system_prompt());
 
-    // Register the file tools (editor + search) for this chat session.
+    // The file tools (editor + search) work inside the working directory. On
+    // top of those the user can grant other folders read-only, with
+    // /add-folder: the library's list_files / read_file / search_files then
+    // join the table, and the system prompt names what is granted. Both change
+    // the request prefix, so they are rebuilt together and only on a change --
+    // the cache misses once per grant, not per turn.
     Context context;
-    context.tools = builtin_tools();
+    FolderSet folders;
+    auto rebuild_tools_and_prompt = [&]() {
+        context.tools = builtin_tools();
+        if (!folders.empty()) {
+            for (auto& t : folder_tools(folders)) context.tools.push_back(std::move(t));
+        }
+        std::string prompt = resolve_system_prompt();
+        if (const std::string extra = folder_prompt(folders); !extra.empty()) {
+            prompt += "\n\n" + extra;
+        }
+        client->setSystemPrompt(prompt);
+    };
+    rebuild_tools_and_prompt();
 
     // ESC-abort cancellation token (lives for the entire chat session). The
     // poll is installed once and runs inline in this thread at each tool-loop
@@ -1288,6 +1122,62 @@ int cmd_chat(const std::string& requested_provider) {
                 << "\n";
             continue;
         }
+        // Read-only folder access. The file tools stay pinned to the working
+        // directory; these grant the model other folders to list, read and
+        // search -- a library the project depends on, a sibling repository --
+        // and nothing more. The labels the model addresses them by are shown
+        // on grant and by /list-folders. Same commands and wording as
+        // tapto-word.
+        if (line == "/list-folders") {
+            ui::print_line(list_folders_text(folders));
+            continue;
+        }
+        if (line.rfind("/add-folder", 0) == 0) {
+            const std::string arg = unquote(line.substr(std::string("/add-folder").size()));
+            if (arg.empty()) {
+                ui::print_line("usage: /add-folder <path>");
+                continue;
+            }
+            const size_t before = folders.folders().size();
+            std::string label;
+            const std::string err = folders.add(arg, &label);
+            if (!err.empty()) {
+                ui::print_error(err);
+                continue;
+            }
+            if (folders.folders().size() == before) {
+                ui::print_line("Already granted, as '" + label + "'.");
+                continue;
+            }
+            rebuild_tools_and_prompt();
+            ui::print_line("Granted read-only access to " + arg + " as '" + label +
+                           "'. The model can now list, read and search it; it cannot change "
+                           "anything. " +
+                           (folders.folders().size() == 1
+                                ? std::string("Revoke with /remove-folder ") + label + "."
+                                : "Files are addressed as <label>/<path>; /list-folders "
+                                  "shows the labels."));
+            continue;
+        }
+        if (line.rfind("/remove-folder", 0) == 0) {
+            const std::string arg = unquote(line.substr(std::string("/remove-folder").size()));
+            if (arg.empty()) {
+                ui::print_line("usage: /remove-folder <path or label>\n\n" +
+                               list_folders_text(folders));
+                continue;
+            }
+            if (!folders.remove(arg)) {
+                ui::print_line("'" + arg + "' is not a granted folder.\n\n" +
+                               list_folders_text(folders));
+                continue;
+            }
+            rebuild_tools_and_prompt();
+            ui::print_line("Revoked '" + arg + "'. " +
+                           (folders.empty() ? std::string("The model has no folder access now.")
+                                            : "\n" + list_folders_text(folders)));
+            continue;
+        }
+
         if (line.rfind("/add-command", 0) == 0) {
             std::istringstream iss(line);
             std::string slash, name;

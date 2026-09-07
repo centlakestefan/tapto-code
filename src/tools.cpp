@@ -1252,6 +1252,102 @@ std::string execute_run_command(Context& /*context*/, const json& in) {
     }
 }
 
+// --- Status-line labels -----------------------------------------------------
+//
+// What the terminal shows while a tool runs, and what it commits to the
+// transcript afterwards: "Edit src/foo.cpp" rather than the tool name and a
+// JSON blob. Attached to each ToolSpec as its `display` hook; the backends
+// call it through getToolDisplayName() and fall back to the raw name if it
+// throws or is unset.
+//
+// str_replace_based_edit_tool:
+//   view (file, range)        -> "View src/foo.cpp:10-50"
+//   view (file)               -> "View src/foo.cpp"
+//   create                    -> "Create src/foo.cpp"
+//   str_replace               -> "Edit src/foo.cpp"
+//   insert                    -> "Insert src/foo.cpp"
+//   unknown sub-command       -> the path
+//
+// find_files:
+//   with search_string        -> "Search *.cpp ~\"query\""
+//   without                   -> "Find *.cpp"
+//
+// list_commands               -> "List commands"
+//
+// run_command:
+//   with args                 -> "Run build arg1 arg2"
+//   without args              -> "Run build"
+
+std::string display_text_editor(const json& input) {
+    if (!input.is_object()) return "str_replace_based_edit_tool";
+    std::string cmd  = input.contains("command") && input["command"].is_string()
+                       ? input["command"].get<std::string>() : "";
+    std::string path = input.contains("path") && input["path"].is_string()
+                       ? input["path"].get<std::string>() : "";
+
+    if (cmd == "view") {
+        std::string label = "View " + path;
+        // view_range: show line numbers when present
+        if (input.contains("view_range")) {
+            const auto& vr = input["view_range"];
+            // Accept both a JSON array and a string-encoded array.
+            auto try_range = [&](const json& r) -> std::string {
+                if (r.is_array() && r.size() == 2 &&
+                    r[0].is_number_integer() && r[1].is_number_integer()) {
+                    int end = r[1].get<int>();
+                    return ":" + std::to_string(r[0].get<int>()) +
+                           "-" + (end < 0 ? "EOF" : std::to_string(end));
+                }
+                return "";
+            };
+            if (vr.is_string()) {
+                try {
+                    label += try_range(json::parse(vr.get<std::string>()));
+                } catch (...) {}
+            } else {
+                label += try_range(vr);
+            }
+        }
+        return label;
+    }
+    if (cmd == "create")      return "Create " + path;
+    if (cmd == "str_replace") return "Edit "   + path;
+    if (cmd == "insert")      return "Insert " + path;
+    // Unknown sub-command: fall back to path only.
+    return path.empty() ? "str_replace_based_edit_tool" : path;
+}
+
+std::string display_find_files(const json& input) {
+    if (!input.is_object()) return "find_files";
+    std::string pattern = input.contains("filename") && input["filename"].is_string()
+                          ? input["filename"].get<std::string>() : "*";
+    bool has_query = input.contains("search_string") &&
+                     input["search_string"].is_string() &&
+                     !input["search_string"].get<std::string>().empty();
+    if (has_query)
+        return "Search " + pattern + " ~\"" + input["search_string"].get<std::string>() + "\"";
+    return "Find " + pattern;
+}
+
+std::string display_list_commands(const json&) {
+    return "List commands";
+}
+
+std::string display_run_command(const json& input) {
+    if (!input.is_object()) return "run_command";
+    std::string name = input.contains("name") && input["name"].is_string()
+                       ? input["name"].get<std::string>() : "?";
+    std::string label = "Run " + name;
+    if (input.contains("args") && input["args"].is_array()) {
+        for (const auto& a : input["args"]) {
+            if (a.is_string()) label += " " + a.get<std::string>();
+        }
+    } else if (input.contains("path") && input["path"].is_string()) {
+        label += " " + input["path"].get<std::string>();
+    }
+    return label;
+}
+
 } // namespace
 
 bool is_builtin_command(const std::string& name) {
@@ -1295,6 +1391,7 @@ std::vector<ToolSpec> builtin_tools() {
         {"required", {"command", "path"}},
     };
     editor.executor = execute_text_editor;
+    editor.display = display_text_editor;
     tools.push_back(std::move(editor));
 
     // File search (find + optional content grep).
@@ -1313,6 +1410,7 @@ std::vector<ToolSpec> builtin_tools() {
         {"required", {"filename"}},
     };
     find.executor = execute_find_files;
+    find.display = display_find_files;
     tools.push_back(std::move(find));
 
     // list_commands: lets the model discover the allow-listed commands.
@@ -1323,6 +1421,7 @@ std::vector<ToolSpec> builtin_tools() {
         "underlying command lines). Only these pre-approved commands can be run.";
     list_cmds.parameters = {{"type", "object"}, {"properties", json::object()}};
     list_cmds.executor = execute_list_commands;
+    list_cmds.display = display_list_commands;
     tools.push_back(std::move(list_cmds));
 
     // run_command: runs one allow-listed command by name. The model cannot
@@ -1361,6 +1460,7 @@ std::vector<ToolSpec> builtin_tools() {
         {"required", {"name"}},
     };
     run.executor = execute_run_command;
+    run.display = display_run_command;
     tools.push_back(std::move(run));
 
     return tools;

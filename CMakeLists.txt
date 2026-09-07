@@ -9,31 +9,23 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif()
 
-# --- Dependencies -----------------------------------------------------------
-# Fetched at configure time; pinned to known-good tags. Bump as needed.
-include(FetchContent)
-
-set(JSON_BuildTests OFF CACHE INTERNAL "")
-FetchContent_Declare(nlohmann_json
-  GIT_REPOSITORY https://github.com/nlohmann/json.git
-  GIT_TAG        v3.11.3
-  GIT_SHALLOW    TRUE
-)
-
-# HTTPS support. OpenSSL must be installed and findable; on Windows/MSVC point
-# CMake at it with -DOPENSSL_ROOT_DIR=C:/path/to/openssl if it isn't auto-found.
-find_package(OpenSSL REQUIRED)
-
-# Header-only; REQUIRE_OPENSSL makes httplib link OpenSSL (plus crypt32 on
-# Windows) and propagate CPPHTTPLIB_OPENSSL_SUPPORT to consumers.
-set(HTTPLIB_REQUIRE_OPENSSL ON CACHE INTERNAL "")
-FetchContent_Declare(httplib
-  GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
-  GIT_TAG        v0.15.3
-  GIT_SHALLOW    TRUE
-)
-
-FetchContent_MakeAvailable(nlohmann_json httplib)
+# --- libtapto ---------------------------------------------------------------
+# The config store, the secret resolver, provider resolution and the three
+# provider clients with the agent loop inside are libtapto's, shared with
+# tapto-word and tapto-vnc. It is vendored here as a byte-identical copy of the
+# one in tapto-word (diff -r against ../tapto-word/libtapto must be empty), and
+# it brings its own dependency pins (nlohmann_json, cpp-httplib, OpenSSL),
+# exported on the `tapto::tapto` target, so nothing is repeated here.
+#
+# What is NOT in the library, and is this program's own: the tool table
+# (src/tools.cpp), the allow-listed commands (src/commands.cpp), the CLI and
+# chat loop (src/main.cpp), and src/ui.cpp, which supplies the bodies for the
+# tapto::ui functions the library declares -- a terminal status line here.
+#
+# The library's unit tests run under ctest with ours: this is its only build
+# on MSVC, so a warning it trips here is fixed upstream and re-copied.
+set(LIBTAPTO_BUILD_TESTS ON CACHE BOOL "" FORCE)
+add_subdirectory(libtapto)
 
 # --- Version stamp ----------------------------------------------------------
 # Puts the version and the originating commit into the binary, so `version` and
@@ -61,100 +53,63 @@ add_custom_target(tapto_version ALL
   VERBATIM
 )
 
+function(tapto_code_warnings target)
+  if(MSVC)
+    target_compile_options(${target} PRIVATE /W4 /EHsc /utf-8)
+  else()
+    target_compile_options(${target} PRIVATE -Wall -Wextra)
+  endif()
+endfunction()
+
 # --- Target -----------------------------------------------------------------
 add_executable(tapto-code
   src/main.cpp
-  src/config.cpp
   src/commands.cpp
-  src/paths.cpp
-  src/secret.cpp
   src/tools.cpp
   src/ui.cpp
-  src/encoding.cpp
-  src/claude.cpp
-  src/openai.cpp
-  src/gemini.cpp
 )
 target_include_directories(tapto-code PRIVATE include "${TAPTO_GENERATED_DIR}")
 add_dependencies(tapto-code tapto_version)
-# TAPTO_VERSION was defined here and read nowhere: main.cpp had moved on to
-# TAPTO_CODE_VERSION with a hardcoded fallback, so the version was whatever the
-# source said and never what the build said. It comes from the generated header
-# now, which is the one place that can be right.
-target_compile_definitions(tapto-code PRIVATE
-  CPPHTTPLIB_OPENSSL_SUPPORT
-)
-target_link_libraries(tapto-code PRIVATE
-  nlohmann_json::nlohmann_json
-  httplib::httplib
-  OpenSSL::SSL
-  OpenSSL::Crypto
-)
-
-# CredReadW / CredFree, for reading API keys out of Windows Credential Manager.
-# Most Windows toolchains link advapi32 by default; say so explicitly so the
-# build doesn't depend on that.
-if(WIN32)
-  target_link_libraries(tapto-code PRIVATE advapi32)
-endif()
-
-if(MSVC)
-  target_compile_options(tapto-code PRIVATE /W4 /EHsc /utf-8)
-else()
-  target_compile_options(tapto-code PRIVATE -Wall -Wextra)
-endif()
+# The library exports nlohmann_json, httplib, OpenSSL, Threads and, on Windows,
+# advapi32/crypt32, together with CPPHTTPLIB_OPENSSL_SUPPORT.
+target_link_libraries(tapto-code PRIVATE tapto::tapto)
+tapto_code_warnings(tapto-code)
 
 install(TARGETS tapto-code RUNTIME DESTINATION bin)
 
 # --- Tests ------------------------------------------------------------------
 # Plain executables with assertions of their own, so `ctest` needs no test
 # framework fetched or installed. Run with: ctest --test-dir build --output-on-failure
+#
+# The library's own test (test-libtapto, covering the config store, secrets,
+# the /compact trimmer and more) is registered by libtapto/CMakeLists.txt.
 enable_testing()
 
+# The text editor tool's line-ending behaviour and the status-line labels.
+# Links the library for config/paths and the library's do-nothing ui: a static
+# library only pulls the objects a test references, and the day one of them
+# reaches provider.cpp it would otherwise fail to link on tapto::ui::print_error.
 add_executable(test-edits
   tests/test_edits.cpp
   src/tools.cpp
   src/commands.cpp
-  src/config.cpp
-  src/paths.cpp
+  libtapto/test/ui_null.cpp
 )
 target_include_directories(test-edits PRIVATE include)
-target_link_libraries(test-edits PRIVATE nlohmann_json::nlohmann_json)
-if(MSVC)
-  target_compile_options(test-edits PRIVATE /W4 /EHsc /utf-8)
-else()
-  target_compile_options(test-edits PRIVATE -Wall -Wextra)
-endif()
+target_link_libraries(test-edits PRIVATE tapto::tapto)
+tapto_code_warnings(test-edits)
 
 add_test(NAME edits COMMAND test-edits)
-
 # Config store: set/unset/save must preserve comments, blank lines, and ordering
 # a user added by hand, rather than rebuilding the file from its key/value table.
+# Config now lives in libtapto (src/config.cpp moved there in the re-org), so
+# this links the library instead of compiling the source in; the /compact
+# trimmer test was folded into libtapto's test-libtapto.
 add_executable(test-config
   tests/test_config.cpp
-  src/config.cpp
 )
 target_include_directories(test-config PRIVATE include)
-if(MSVC)
-  target_compile_options(test-config PRIVATE /W4 /EHsc /utf-8)
-else()
-  target_compile_options(test-config PRIVATE -Wall -Wextra)
-endif()
+target_link_libraries(test-config PRIVATE tapto::tapto)
+tapto_code_warnings(test-config)
 
 add_test(NAME config COMMAND test-config)
-
-# /compact's input trimmer (AiBackend::buildTrimmedHistoryForSummary) is
-# header-only against the base class, so this target compiles a single test
-# file that drives it through a stub backend — no providers, keys, or network.
-add_executable(test-compact
-  tests/test_compact.cpp
-)
-target_include_directories(test-compact PRIVATE include)
-target_link_libraries(test-compact PRIVATE nlohmann_json::nlohmann_json)
-if(MSVC)
-  target_compile_options(test-compact PRIVATE /W4 /EHsc /utf-8)
-else()
-  target_compile_options(test-compact PRIVATE -Wall -Wextra)
-endif()
-
-add_test(NAME compact COMMAND test-compact)

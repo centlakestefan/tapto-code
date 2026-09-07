@@ -24,8 +24,9 @@ approved — all from a single self-contained C++17 binary.
 - **Allow-listed commands** — `run_command` only runs commands you've explicitly
   added (with optional `%1` / `%p1` placeholders); it is never a general shell.
 - **Three-scope config** — system / global / project, with git-style precedence.
-- **Self-contained** — one binary; dependencies (nlohmann/json, cpp-httplib,
-  OpenSSL) are fetched at build time.
+- **Self-contained** — one binary; the shared tapto code is vendored in-tree
+  as `libtapto/`, and its dependencies (nlohmann/json, cpp-httplib, OpenSSL)
+  are fetched at build time.
 
 Licensed under the Apache License 2.0.
 
@@ -48,10 +49,24 @@ install:
 ctest --test-dir build --output-on-failure
 ```
 
+### libtapto
+
+The code every tapto program shares — the config store and secret resolver,
+provider resolution, and the three provider clients (Claude, OpenAI-compatible,
+Gemini) with the agent loop inside — is one static library, **libtapto**,
+vendored in-tree under `libtapto/` and built with `add_subdirectory`. The same
+directory, byte for byte, lives in [tapto-word](../tapto-word) and is on its way
+into tapto-vnc; a fix to the library lands in one copy and is copied to the
+others. What is this program's own: the tool table (`src/tools.cpp`), the
+allow-listed commands, the CLI and chat loop, and `src/ui.cpp`, which gives the
+`tapto::ui` functions the library declares their terminal bodies.
+
+The library's unit tests run under `ctest` alongside this program's.
+
 ### Dependencies
 
-Fetched automatically at configure time via CMake `FetchContent` (needs git +
-network on the first configure):
+Pinned in `libtapto/CMakeLists.txt` and fetched automatically at configure time
+via CMake `FetchContent` (needs git + network on the first configure):
 
 - [nlohmann/json](https://github.com/nlohmann/json) `v3.11.3` — JSON.
 - [cpp-httplib](https://github.com/yhirose/cpp-httplib) `v0.15.3` — HTTP client
@@ -104,8 +119,26 @@ It prints a `>` prompt, reads a line, sends it to the provider, prints the
 reply, and repeats. Type `/exit` (or Ctrl-D) to quit.
 
 In-session slash commands: `/clear` (reset the conversation — useful to recover
-after filling the model's context window), `/list-commands`, and
-`/add-command <name> <command...>`.
+after filling the model's context window), `/compact`, `/env`,
+`/list-commands`, `/add-command <name> <command...>`, and the folder commands
+below.
+
+**Reading beyond the working directory.** The file tools are confined to the
+directory tapto-code was started in. To let the model read something else — a
+library the project depends on, a sibling repository — grant it read-only:
+
+```
+/add-folder C:\proj\libfoo
+/list-folders
+/remove-folder libfoo
+```
+
+While a folder is granted the model gets four more tools — `list_folders`,
+`list_files`, `read_file` and `search_files` — that list, read and search under
+the granted roots and nothing else; they cannot create or change a file. Files
+are addressed as `<label>/<relative path>`, where the label is the folder's last
+path component (shown on grant and by `/list-folders`). A grant lasts for the
+session. The same commands exist in tapto-word.
 
 **First run:** if no provider/api-key is configured, tapto-code prompts for them
 interactively and saves them to the global (`~/.tapto`) config, then starts
@@ -129,6 +162,8 @@ Chat config keys:
 | `<name>-reasoning-effort` | no | unset — sent as `reasoning_effort` by the **openai** dialect only (e.g. `low`, `medium`, `high`); ignored with a warning on other dialects |
 | `max-output-tokens` | no   | `16000` — raise it for long replies (large tables, reports) |
 | `max-tool-iterations` | no | `200` — max tool-call rounds per reply before the agent stops |
+| `connection-timeout` | no  | `30` — seconds to wait for the provider to accept the connection |
+| `read-timeout`  | no       | `300` — seconds to wait for the whole answer; the reply is not streamed, so raise it for a slow local model (a timeout shorter than the generation retries the same request until the retry budget is spent) |
 | `print-cot`     | no       | `true` — show the model's intermediate reasoning/text during tool calls; set `false` to keep it in the trace file only |
 | `system-prompt` | no       | built-in prompt                                      |
 | `trace-file`    | no       | unset — set to a path to enable diagnostic logging  |
