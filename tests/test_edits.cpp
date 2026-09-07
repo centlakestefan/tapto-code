@@ -374,12 +374,29 @@ int main() {
         CHECK_EQ(label, "tapto-edit-tests-granted");
         tapto::set_granted_folders(&granted);
 
-        // Read-only: the editor refuses, and says where reading is possible.
+        // Read-only: reading works by label and by absolute path, whichever
+        // spelling the model picks (view, or the built-in cat); writing is
+        // refused with the mode named.
         std::string r = edit(ctx, json{{"command", "view"}, {"path", label + "/docs/note.txt"}});
-        CHECK_TRUE(r.rfind("ERROR:", 0) == 0);
-        CHECK_TRUE(r.find("read_file") != std::string::npos);
+        CHECK_EQ(r, "1|alpha\n2|beta\n3|\n");
         r = edit(ctx, json{{"command", "view"}, {"path", (outside / "docs" / "note.txt").string()}});
+        CHECK_EQ(r, "1|alpha\n2|beta\n3|\n");
+        {
+            ToolExecutorFn run = find_run_command(ctx);
+            std::string c = run(ctx, json{{"name", "cat"}, {"args", {label + "/docs/note.txt"}}});
+            CHECK_EQ(c, "alpha\nbeta\n");
+            c = run(ctx, json{{"name", "ls"}, {"cwd", label}});
+            CHECK_TRUE(c.find("docs") != std::string::npos);
+            c = run(ctx, json{{"name", "cat"}, {"args", {"docs/note.txt"}}, {"cwd", outside.string()}});
+            CHECK_EQ(c, "alpha\nbeta\n");
+        }
+        r = edit(ctx, json{{"command", "str_replace"}, {"path", label + "/docs/note.txt"},
+                           {"old_str", "beta"}, {"new_str", "X"}});
         CHECK_TRUE(r.rfind("ERROR:", 0) == 0 && r.find("read-only") != std::string::npos);
+        r = edit(ctx, json{{"command", "str_replace"}, {"path", (outside / "docs" / "note.txt").string()},
+                           {"old_str", "beta"}, {"new_str", "X"}});
+        CHECK_TRUE(r.rfind("ERROR:", 0) == 0 && r.find("read-only") != std::string::npos);
+        CHECK_EQ(read_raw((outside / "docs" / "note.txt").string()), "alpha\nbeta\n");
 
         // Read-write: label-relative and absolute both work, for view and edits.
         CHECK_TRUE(granted.set_writable(label, true));
@@ -423,13 +440,22 @@ int main() {
             CHECK_TRUE(f.find(label + "/docs/note.txt") != std::string::npos);
         }
 
-        // Commands never run under a grant.
+        // A shell command's cwd may be a read-write grant and never a
+        // read-only one. The cwd is checked before the command is looked up,
+        // so an unknown name shows which check it got past.
         {
             ToolExecutorFn run = find_run_command(ctx);
-            std::string c = run(ctx, json{{"name", "ls"}, {"cwd", label}});
-            CHECK_TRUE(c.rfind("ERROR:", 0) == 0);
-            c = run(ctx, json{{"name", "ls"}, {"cwd", outside.string()}});
-            CHECK_TRUE(c.rfind("ERROR:", 0) == 0);
+            std::string c = run(ctx, json{{"name", "no-such-cmd"}, {"cwd", label}});
+            CHECK_TRUE(c.find("Unknown command") != std::string::npos); // rw: cwd accepted
+            CHECK_TRUE(granted.set_writable(label, false));
+            c = run(ctx, json{{"name", "no-such-cmd"}, {"cwd", label}});
+            CHECK_TRUE(c.rfind("ERROR:", 0) == 0 && c.find("read-only") != std::string::npos);
+            c = run(ctx, json{{"name", "no-such-cmd"}, {"cwd", outside.string()}});
+            CHECK_TRUE(c.rfind("ERROR:", 0) == 0 && c.find("read-only") != std::string::npos);
+            // Built-ins still read there.
+            c = run(ctx, json{{"name", "ls"}, {"cwd", label}});
+            CHECK_TRUE(c.find("docs") != std::string::npos);
+            CHECK_TRUE(granted.set_writable(label, true));
         }
 
         tapto::set_granted_folders(nullptr);

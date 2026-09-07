@@ -180,21 +180,27 @@ bool is_under(const fs::path& root, const fs::path& path) {
     return !rel.empty() && *rel.begin() != fs::path("..");
 }
 
-// The writable granted folder that owns `resolved`, or null.
-const Folder* writable_owner(const fs::path& resolved) {
+// The granted folder that owns `resolved`, or null. `writable_only` narrows
+// it to the ones the user marked rw.
+const Folder* granted_owner(const fs::path& resolved, bool writable_only) {
     if (!g_folders) return nullptr;
     for (const auto& f : g_folders->folders()) {
-        if (f.writable && is_under(f.root, resolved)) return &f;
+        if ((f.writable || !writable_only) && is_under(f.root, resolved)) return &f;
     }
     return nullptr;
 }
 
-// What a path may reach. Files: the working directory and, on top of it, the
-// granted folders marked writable -- the editor's and find_files' world.
-// WorkingDir: the working directory alone -- where commands run and what
-// their path arguments may name, since a grant is about files, not about
-// running things elsewhere.
-enum class Scope { Files, WorkingDir };
+// What a path may reach beyond the working directory, which every scope has.
+//
+//   Read        every granted folder, read-only ones included: a read is a
+//               read whichever spelling the model picks (the editor's view,
+//               find_files, the built-in cat/ls/head/...).
+//   Write       the granted folders marked rw: the editor's create and edit,
+//               and the cwd and %p paths of an allow-listed shell command --
+//               letting the model edit a folder and letting it run the
+//               project's own build there is the same trust.
+//   WorkingDir  the working directory alone.
+enum class Scope { Read, Write, WorkingDir };
 
 // Resolve `input` (absolute, or relative to `base`) and confirm it stays
 // within the sandbox. `base` (default: the sandbox root itself) is the
@@ -206,29 +212,33 @@ enum class Scope { Files, WorkingDir };
 // with the resolved absolute path and returns true; otherwise sets `error` and
 // returns false.
 //
-// With Scope::Files a path may also land in a writable granted folder, written
-// either as "<label>/<rest>" or as an absolute path under its root. The label
-// form is taken only when the working directory has no entry of that name,
-// so a project's own subfolder always wins over a grant that happens to share
-// its name; the absolute form is always unambiguous.
+// A granted folder is reached either as "<label>/<rest>" or as an absolute
+// path under its root. The label form is taken only when resolving from the
+// working directory itself and it has no entry of that name, so a project's
+// own subfolder always wins over a grant that happens to share its name; the
+// absolute form is always unambiguous.
 bool resolve_in_sandbox(const std::string& input, fs::path& out, std::string& error,
-                        const fs::path& base = fs::path(), Scope scope = Scope::Files) {
+                        const fs::path& base = fs::path(), Scope scope = Scope::Read) {
     const fs::path& root = sandbox_root();
     const fs::path anchor = base.empty() ? root : base;
+    const bool grants = scope != Scope::WorkingDir && g_folders != nullptr;
+    const bool writes = scope == Scope::Write;
     std::error_code ec;
     fs::path in_path(input);
 
-    if (scope == Scope::Files && g_folders && !in_path.is_absolute() && !in_path.empty() &&
-        base.empty()) {
+    auto refuse_read_only = [&](const Folder& f) {
+        error = "ERROR: '" + input + "' is in '" + f.label + "', which the user granted "
+                "read-only. Reading it is fine (read_file, view, cat); to change it or run "
+                "a command there, ask the user to grant the folder read-write with "
+                "/add-folder <path> rw.";
+        return false;
+    };
+
+    if (grants && !in_path.is_absolute() && !in_path.empty() && anchor == root) {
         const std::string head = in_path.begin()->string();
         const Folder* f = g_folders->get(head);
         if (f && !fs::exists(anchor / head, ec)) {
-            if (!f->writable) {
-                error = "ERROR: '" + input + "' is in '" + f->label + "', which the user "
-                        "granted read-only. Read it with read_file; to change it, ask the "
-                        "user to grant the folder read-write with /add-folder <path> rw.";
-                return false;
-            }
+            if (writes && !f->writable) return refuse_read_only(*f);
             fs::path rest;
             for (auto it = std::next(in_path.begin()); it != in_path.end(); ++it) rest /= *it;
             fs::path abs = f->root / rest;
@@ -249,28 +259,19 @@ bool resolve_in_sandbox(const std::string& input, fs::path& out, std::string& er
         out = resolved;
         return true;
     }
-    if (scope == Scope::Files && writable_owner(resolved)) {
-        out = resolved;
-        return true;
-    }
-
-    // A path in a folder the user granted read-only: say so, and say where
-    // reading it is possible, rather than calling it unreachable.
-    if (scope == Scope::Files && g_folders) {
-        for (const auto& f : g_folders->folders()) {
-            if (!f.writable && is_under(f.root, resolved)) {
-                error = "ERROR: '" + input + "' is in '" + f.label + "', which the user "
-                        "granted read-only. Read it with read_file; to change it, ask the "
-                        "user to grant the folder read-write with /add-folder <path> rw.";
-                return false;
-            }
+    if (grants) {
+        if (const Folder* f = granted_owner(resolved, /*writable_only=*/false)) {
+            if (writes && !f->writable) return refuse_read_only(*f);
+            out = resolved;
+            return true;
         }
     }
     error = "ERROR: '" + input + "' is outside the working directory. "
             "tapto-code can only access the folder it was started in and its "
             "subdirectories" +
-            std::string(scope == Scope::Files && g_folders && !g_folders->empty()
-                            ? ", plus any folder the user has granted read-write."
+            std::string(grants && !g_folders->empty()
+                            ? (writes ? ", plus any folder the user has granted read-write."
+                                      : ", plus any folder the user has granted.")
                             : ".");
     return false;
 }
@@ -282,7 +283,7 @@ bool resolve_in_sandbox(const std::string& input, fs::path& out, std::string& er
 // `git status` runs, and .git/hooks/* run on commit. Checked against whichever
 // root the path landed in, so a writable grant is covered too.
 bool in_git_dir(const fs::path& resolved) {
-    const Folder* owner = writable_owner(resolved);
+    const Folder* owner = granted_owner(resolved, /*writable_only=*/true);
     const fs::path& root = owner ? owner->root : sandbox_root();
     for (const auto& part : resolved.lexically_relative(root)) {
         if (part == ".git") return true;
@@ -292,7 +293,7 @@ bool in_git_dir(const fs::path& resolved) {
 
 // Resolve a path the model wants to write to: sandboxed, and never under .git.
 bool resolve_for_write(const std::string& input, fs::path& out, std::string& error) {
-    if (!resolve_in_sandbox(input, out, error)) return false;
+    if (!resolve_in_sandbox(input, out, error, fs::path(), Scope::Write)) return false;
     if (in_git_dir(out)) {
         error = "ERROR: '" + input + "' is inside .git, which tapto-code never "
                 "modifies. Use an allow-listed git command instead.";
@@ -549,7 +550,7 @@ std::string execute_find_files(Context& /*context*/, const json& in) {
             // (The iterator yields absolute paths because `base` is absolute.)
             // A hit inside a writable granted folder is shown as
             // "<label>/<rest>", which the editor accepts back.
-            if (const Folder* owner = writable_owner(p); owner && !is_under(sandbox_root(), p)) {
+            if (granted_owner(p, /*writable_only=*/false) && !is_under(sandbox_root(), p)) {
                 m.path = g_folders->display(p);
             } else {
                 m.path = p.lexically_relative(sandbox_root()).generic_string();
@@ -713,7 +714,7 @@ bool build_argv(const std::string& tpl, const std::vector<std::string>& args,
     auto subst_path = [&](const std::string& value, std::string& out) -> bool {
         fs::path resolved;
         std::string perr;
-        if (!resolve_in_sandbox(value, resolved, perr, fs::path(), Scope::WorkingDir)) { error = perr; return false; }
+        if (!resolve_in_sandbox(value, resolved, perr, fs::path(), Scope::Write)) { error = perr; return false; }
         out = resolved.string();
         return true;
     };
@@ -1220,13 +1221,16 @@ std::string execute_run_command(Context& /*context*/, const json& in) {
         // at any subfolder — but never out of the tree. This is shared by BOTH
         // the built-ins (they resolve their relative path against it) and the
         // shell-built commands (they run with it as their working dir), so a
-        // `cwd` means the same thing in either case.
+        // `cwd` means the same thing in either case. What "the tree" includes
+        // differs: a built-in only reads, so any granted folder will do; a
+        // shell command may do anything, so only one granted read-write.
         fs::path base = sandbox_root();
         if (in.contains("cwd")) {
             if (!in["cwd"].is_string()) return "ERROR: 'cwd' must be a string.";
             const std::string raw = in["cwd"].get<std::string>();
             std::string err;
-            if (!resolve_in_sandbox(raw, base, err, fs::path(), Scope::WorkingDir)) return err;
+            const Scope scope = is_builtin_command(name) ? Scope::Read : Scope::Write;
+            if (!resolve_in_sandbox(raw, base, err, fs::path(), scope)) return err;
             std::error_code ec;
             if (!fs::is_directory(base, ec)) {
                 return "ERROR: cwd '" + raw + "' is not an existing directory. "

@@ -140,12 +140,17 @@ the granted roots and nothing else; they cannot create or change a file. Files
 are addressed as `<label>/<relative path>`, where the label is the folder's last
 path component (shown on grant and by `/list-folders`).
 
-A folder granted with `rw` may also be edited: the editor tool and `find_files`
-reach into it, as `<label>/<path>` or by absolute path, exactly as they do the
-working directory, with the same refusal of anything under `.git`. A subfolder
-of the working directory with the same name as a label wins over the label.
-Commands (`run_command`) always run in the working directory, whatever is
-granted. Granting a folder again with a different mode changes the mode.
+The working-directory tools reach into granted folders too, as
+`<label>/<path>` or by absolute path, by one rule: a read is allowed anywhere
+granted, a write only where the grant is `rw`. So the editor's `view`,
+`find_files` and the built-in `cat`, `ls`, `head`, `tail`, `wc` and `tree`
+work under any grant, whichever spelling the model picks; `create`,
+`str_replace` and `insert` need `rw`, with the same refusal of anything under
+`.git`; and an allow-listed shell command may run with its `cwd` in an `rw`
+folder, never a read-only one — letting the model edit a folder and letting
+it run the project's build there is the same trust. A subfolder of the working
+directory with the same name as a label wins over the label. Granting a folder
+again with a different mode changes the mode.
 
 A grant lasts for the session. The read-only commands exist in tapto-word too.
 

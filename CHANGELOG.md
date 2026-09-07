@@ -66,14 +66,18 @@ carries everything else.
   `read_file` and `search_files`, confined to the granted roots and unable to
   change a file; the tools and the prompt paragraph naming the roots come
   from libtapto and are the same ones tapto-word offers.
-- `/add-folder <path> rw` grants a folder read-write: the editor tool and
-  `find_files` then reach into it, by `<label>/<path>` or by absolute path,
-  with the working directory's own rules (nothing under `.git`, and a
-  same-named subfolder of the working directory wins over the label).
-  `run_command` stays in the working directory whatever is granted. Granting
-  a folder again with the other mode switches it; `/list-folders` shows the
-  mode. `find_files` also skips `__pycache__`, `.idea` and `build-*` now, the
-  library's noise list.
+- `/add-folder <path> rw` grants a folder read-write. The working-directory
+  tools reach into granted folders by `<label>/<path>` or by absolute path
+  under one rule: a read is allowed anywhere granted, a write only where the
+  grant is `rw`. The editor's `view`, `find_files` and the built-in `cat`,
+  `ls`, `head`, `tail`, `wc` and `tree` work under any grant, so a model that
+  reaches for `cat` instead of `read_file` is not sent on a detour; `create`,
+  `str_replace` and `insert` need `rw`, with nothing under `.git` either way;
+  an allow-listed shell command may take its `cwd` in an `rw` folder and never
+  a read-only one. A same-named subfolder of the working directory wins over a
+  label. Granting a folder again with the other mode switches it;
+  `/list-folders` shows the mode. `find_files` also skips `__pycache__`,
+  `.idea` and `build-*` now, the library's noise list.
 
 ### Changed
 
