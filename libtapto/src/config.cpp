@@ -174,7 +174,9 @@ void Config::save(const fs::path& path) const {
     }
     ::close(fd);
 #else
-    std::ofstream out(path, std::ios::trunc);
+    // Binary, so Windows does not turn the LF that load() normalised to back
+    // into CRLF: the file is meant to round-trip byte for byte.
+    std::ofstream out(path, std::ios::trunc | std::ios::binary);
     if (!out) {
         throw std::runtime_error("cannot write config file: " + path.string());
     }
