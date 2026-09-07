@@ -66,6 +66,14 @@ carries everything else.
   `read_file` and `search_files`, confined to the granted roots and unable to
   change a file; the tools and the prompt paragraph naming the roots come
   from libtapto and are the same ones tapto-word offers.
+- `/add-folder <path> rw` grants a folder read-write: the editor tool and
+  `find_files` then reach into it, by `<label>/<path>` or by absolute path,
+  with the working directory's own rules (nothing under `.git`, and a
+  same-named subfolder of the working directory wins over the label).
+  `run_command` stays in the working directory whatever is granted. Granting
+  a folder again with the other mode switches it; `/list-folders` shows the
+  mode. `find_files` also skips `__pycache__`, `.idea` and `build-*` now, the
+  library's noise list.
 
 ### Changed
 

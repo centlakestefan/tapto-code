@@ -412,11 +412,14 @@ std::string unquote(std::string s) {
 
 // What /list-folders prints, and what the other folder commands append.
 std::string list_folders_text(const FolderSet& folders) {
-    if (folders.empty()) return "No folders are granted. Grant one with /add-folder <path>.";
+    if (folders.empty()) {
+        return "No folders are granted. Grant one with /add-folder <path> [ro|rw].";
+    }
     std::ostringstream out;
-    out << "The model can read these folders:\n";
+    out << "The model can reach these folders:\n";
     for (const auto& f : folders.folders()) {
-        out << "  " << f.label << "  ->  " << f.root.generic_string() << "\n";
+        out << "  " << f.label << "  ->  " << f.root.generic_string()
+            << (f.writable ? "  (read-write)" : "  (read-only)") << "\n";
     }
     std::string s = out.str();
     if (!s.empty() && s.back() == '\n') s.pop_back();
@@ -813,13 +816,15 @@ int cmd_chat(const std::string& requested_provider) {
     client->start();
 
     // The file tools (editor + search) work inside the working directory. On
-    // top of those the user can grant other folders read-only, with
-    // /add-folder: the library's list_files / read_file / search_files then
-    // join the table, and the system prompt names what is granted. Both change
+    // top of those the user can grant other folders with /add-folder: the
+    // library's list_files / read_file / search_files then join the table, the
+    // editor and find_files also reach into the ones granted read-write, and
+    // the system prompt names what is granted. Tools and prompt both change
     // the request prefix, so they are rebuilt together and only on a change --
     // the cache misses once per grant, not per turn.
     Context context;
     FolderSet folders;
+    set_granted_folders(&folders); // outlives the chat loop below
     auto rebuild_tools_and_prompt = [&]() {
         context.tools = builtin_tools();
         if (!folders.empty()) {
@@ -1133,26 +1138,56 @@ int cmd_chat(const std::string& requested_provider) {
             continue;
         }
         if (line.rfind("/add-folder", 0) == 0) {
-            const std::string arg = unquote(line.substr(std::string("/add-folder").size()));
+            // "/add-folder <path> [ro|rw]": a trailing ro/rw word is the mode,
+            // read-only by default. The path may be quoted, so the mode is
+            // split off first and the rest unquoted as one argument.
+            std::string rest = trim(line.substr(std::string("/add-folder").size()));
+            bool writable = false;
+            {
+                const size_t sp = rest.find_last_of(" \t");
+                if (sp != std::string::npos) {
+                    std::string mode = rest.substr(sp + 1);
+                    std::transform(mode.begin(), mode.end(), mode.begin(),
+                                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                    if (mode == "rw" || mode == "ro") {
+                        writable = (mode == "rw");
+                        rest = rest.substr(0, sp);
+                    }
+                }
+            }
+            const std::string arg = unquote(rest);
             if (arg.empty()) {
-                ui::print_line("usage: /add-folder <path>");
+                ui::print_line("usage: /add-folder <path> [ro|rw]   (read-only unless rw)");
                 continue;
             }
             const size_t before = folders.folders().size();
             std::string label;
-            const std::string err = folders.add(arg, &label);
+            const std::string err = folders.add(arg, &label, writable);
             if (!err.empty()) {
                 ui::print_error(err);
                 continue;
             }
             if (folders.folders().size() == before) {
-                ui::print_line("Already granted, as '" + label + "'.");
+                // Already granted: a repeated grant may still change the mode.
+                const Folder* have = folders.get(label);
+                if (have && have->writable != writable) {
+                    folders.set_writable(label, writable);
+                    rebuild_tools_and_prompt();
+                    ui::print_line("'" + label + "' is now " +
+                                   (writable ? "read-write." : "read-only."));
+                } else {
+                    ui::print_line("Already granted, as '" + label + "' (" +
+                                   (have && have->writable ? "read-write" : "read-only") + ").");
+                }
                 continue;
             }
             rebuild_tools_and_prompt();
-            ui::print_line("Granted read-only access to " + arg + " as '" + label +
-                           "'. The model can now list, read and search it; it cannot change "
-                           "anything. " +
+            ui::print_line(std::string("Granted ") + (writable ? "read-write" : "read-only") +
+                           " access to " + arg + " as '" + label + "'. The model can now list, "
+                           "read and search it" +
+                           (writable ? ", and create or edit files under it with the editor tool, "
+                                       "as <label>/<path> or by absolute path. "
+                                     : "; it cannot change anything. ") +
                            (folders.folders().size() == 1
                                 ? std::string("Revoke with /remove-folder ") + label + "."
                                 : "Files are addressed as <label>/<path>; /list-folders "

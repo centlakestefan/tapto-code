@@ -356,6 +356,88 @@ int main() {
 
     fs::remove_all(kDir, ec);
 
+    // --- granted folders ----------------------------------------------------
+    // A folder granted read-write with /add-folder is reachable by the editor
+    // and find_files as "<label>/<path>" or by absolute path; a read-only one
+    // is refused with a pointer to read_file; commands stay in the working
+    // directory whatever is granted.
+    {
+        const fs::path outside = fs::temp_directory_path() / "tapto-edit-tests-granted";
+        fs::remove_all(outside, ec);
+        fs::create_directories(outside / "docs", ec);
+        fs::create_directories(outside / ".git", ec);
+        write_raw((outside / "docs" / "note.txt").string(), "alpha\nbeta\n");
+
+        tapto::FolderSet granted;
+        std::string label;
+        CHECK_EQ(granted.add(outside.string(), &label, /*writable=*/false), "");
+        CHECK_EQ(label, "tapto-edit-tests-granted");
+        tapto::set_granted_folders(&granted);
+
+        // Read-only: the editor refuses, and says where reading is possible.
+        std::string r = edit(ctx, json{{"command", "view"}, {"path", label + "/docs/note.txt"}});
+        CHECK_TRUE(r.rfind("ERROR:", 0) == 0);
+        CHECK_TRUE(r.find("read_file") != std::string::npos);
+        r = edit(ctx, json{{"command", "view"}, {"path", (outside / "docs" / "note.txt").string()}});
+        CHECK_TRUE(r.rfind("ERROR:", 0) == 0 && r.find("read-only") != std::string::npos);
+
+        // Read-write: label-relative and absolute both work, for view and edits.
+        CHECK_TRUE(granted.set_writable(label, true));
+        r = edit(ctx, json{{"command", "view"}, {"path", label + "/docs/note.txt"}});
+        CHECK_EQ(r, "1|alpha\n2|beta\n3|\n");
+        r = edit(ctx, json{{"command", "str_replace"},
+                           {"path", (outside / "docs" / "note.txt").string()},
+                           {"old_str", "beta"}, {"new_str", "BETA"}});
+        CHECK_EQ(r, "OK");
+        CHECK_EQ(read_raw((outside / "docs" / "note.txt").string()), "alpha\nBETA\n");
+        r = edit(ctx, json{{"command", "create"}, {"path", label + "/docs/new.txt"},
+                           {"file_text", "fresh\n"}});
+        CHECK_TRUE(r.find("Created") != std::string::npos || r.find("OK") != std::string::npos);
+        CHECK_EQ(read_raw((outside / "docs" / "new.txt").string()), "fresh\n");
+
+        // .git under a writable grant is refused just like the project's own.
+        r = edit(ctx, json{{"command", "create"}, {"path", label + "/.git/config"},
+                           {"file_text", "[core]\n"}});
+        CHECK_TRUE(r.rfind("ERROR:", 0) == 0 && r.find(".git") != std::string::npos);
+
+        // Outside every grant is still outside.
+        r = edit(ctx, json{{"command", "view"},
+                           {"path", (fs::temp_directory_path() / "tapto-nowhere.txt").string()}});
+        CHECK_TRUE(r.rfind("ERROR:", 0) == 0);
+
+        // A working-directory entry with the label's name wins over the grant.
+        // (Relative paths resolve against the working directory itself, so
+        // the decoy has to sit there, not in the test subdirectory.)
+        fs::create_directories(fs::path(label), ec);
+        write_raw(label + "/docs.txt", "local\n");
+        r = edit(ctx, json{{"command", "view"}, {"path", label + "/docs.txt"}});
+        CHECK_EQ(r, "1|local\n2|\n");
+        fs::remove_all(fs::path(label), ec);
+
+        // find_files reports hits under the grant by label.
+        {
+            ToolExecutorFn find = nullptr;
+            for (const auto& t : ctx.tools) if (t.name == "find_files") find = t.executor;
+            CHECK_TRUE(find != nullptr);
+            std::string f = find(ctx, json{{"filename", "*.txt"}, {"path", label}});
+            CHECK_TRUE(f.find(label + "/docs/note.txt") != std::string::npos);
+        }
+
+        // Commands never run under a grant.
+        {
+            ToolExecutorFn run = find_run_command(ctx);
+            std::string c = run(ctx, json{{"name", "ls"}, {"cwd", label}});
+            CHECK_TRUE(c.rfind("ERROR:", 0) == 0);
+            c = run(ctx, json{{"name", "ls"}, {"cwd", outside.string()}});
+            CHECK_TRUE(c.rfind("ERROR:", 0) == 0);
+        }
+
+        tapto::set_granted_folders(nullptr);
+        r = edit(ctx, json{{"command", "view"}, {"path", label + "/docs/note.txt"}});
+        CHECK_TRUE(r.rfind("ERROR:", 0) == 0);
+        fs::remove_all(outside, ec);
+    }
+
     // --- status-line labels -------------------------------------------------
     // Each tool's `display` hook, reached the way the backends reach it. A
     // missing hook shows the raw tool name and fails nothing, so this is the

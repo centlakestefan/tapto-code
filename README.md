@@ -128,7 +128,8 @@ directory tapto-code was started in. To let the model read something else — a
 library the project depends on, a sibling repository — grant it read-only:
 
 ```
-/add-folder C:\proj\libfoo
+/add-folder C:\proj\libfoo          read-only
+/add-folder C:\proj\libfoo rw       read-write
 /list-folders
 /remove-folder libfoo
 ```
@@ -137,8 +138,16 @@ While a folder is granted the model gets four more tools — `list_folders`,
 `list_files`, `read_file` and `search_files` — that list, read and search under
 the granted roots and nothing else; they cannot create or change a file. Files
 are addressed as `<label>/<relative path>`, where the label is the folder's last
-path component (shown on grant and by `/list-folders`). A grant lasts for the
-session. The same commands exist in tapto-word.
+path component (shown on grant and by `/list-folders`).
+
+A folder granted with `rw` may also be edited: the editor tool and `find_files`
+reach into it, as `<label>/<path>` or by absolute path, exactly as they do the
+working directory, with the same refusal of anything under `.git`. A subfolder
+of the working directory with the same name as a label wins over the label.
+Commands (`run_command`) always run in the working directory, whatever is
+granted. Granting a folder again with a different mode changes the mode.
+
+A grant lasts for the session. The read-only commands exist in tapto-word too.
 
 **First run:** if no provider/api-key is configured, tapto-code prompts for them
 interactively and saves them to the global (`~/.tapto`) config, then starts

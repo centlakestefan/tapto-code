@@ -788,7 +788,7 @@ void print_banner(const std::string& version,
 
     // Hints
     std::cout << kDim
-              << "  ESC to interrupt  │  /clear  /compact  /cot on|off  /env  /add-folder <path>  /add-command <name> <cmd>  /list-commands  /help  /exit"
+              << "  ESC to interrupt  │  /clear  /compact  /cot on|off  /env  /add-folder <path> [rw]  /add-command <name> <cmd>  /list-commands  /help  /exit"
               << kReset << "\n\n";
 }
 
@@ -805,7 +805,7 @@ void print_chat_header(const std::string& provider,
 }
 
 void print_chat_hints() {
-    std::cout << "Slash commands: /clear, /compact, /add-folder <path>, /list-commands, "
+    std::cout << "Slash commands: /clear, /compact, /add-folder <path> [rw], /list-commands, "
                  "/add-command <name> <command...>, /exit\n";
 }
 
@@ -819,7 +819,7 @@ void print_help(const std::vector<std::string>& tool_names) {
               << "    /env                          show session environment (directory, model, history)\n"
               << "    /list-commands                list allow-listed shell commands\n"
               << "    /add-command <name> <cmd>     add a new allow-listed command\n"
-              << "    /add-folder <path>            grant the model read-only access to a folder\n"
+              << "    /add-folder <path> [ro|rw]    grant the model a folder: read-only, or rw to edit\n"
               << "    /remove-folder <path|label>   revoke it\n"
               << "    /list-folders                 show what is granted\n"
               << "    /help                         show this help\n"

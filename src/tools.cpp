@@ -34,23 +34,9 @@ namespace tapto {
 
 namespace {
 
-// --- small helpers --------------------------------------------------------
-
-std::vector<std::string> split_lines(const std::string& text) {
-    std::vector<std::string> lines;
-    std::string cur;
-    for (char c : text) {
-        if (c == '\n') {
-            if (!cur.empty() && cur.back() == '\r') cur.pop_back();
-            lines.push_back(cur);
-            cur.clear();
-        } else {
-            cur += c;
-        }
-    }
-    lines.push_back(cur); // trailing segment (empty if text ended with '\n')
-    return lines;
-}
+// The small helpers this file used to carry -- split_lines, read_file,
+// wildcard_match, is_noise_dir -- come from tapto/fstools.h now, so the glob
+// and the noise-directory list agree with the folder tools.
 
 // --- line endings ---------------------------------------------------------
 //
@@ -158,15 +144,6 @@ size_t line_start_offset(const std::string& s, int line) {
     return off;
 }
 
-bool read_file(const fs::path& path, std::string& out) {
-    std::ifstream in(path, std::ios::binary);
-    if (!in) return false;
-    std::ostringstream ss;
-    ss << in.rdbuf();
-    out = ss.str();
-    return true;
-}
-
 bool write_file(const fs::path& path, const std::string& content) {
     std::error_code ec;
     if (path.has_parent_path()) fs::create_directories(path.parent_path(), ec);
@@ -174,33 +151,6 @@ bool write_file(const fs::path& path, const std::string& content) {
     if (!out) return false;
     out << content;
     return out.good();
-}
-
-// Glob match supporting '*' (any run) and '?' (single char). Iterative with
-// backtracking so it stays O(n*m) without recursion.
-bool wildcard_match(const std::string& pattern, const std::string& text) {
-    size_t p = 0, t = 0, star = std::string::npos, mark = 0;
-    while (t < text.size()) {
-        if (p < pattern.size() && (pattern[p] == '?' || pattern[p] == text[t])) {
-            ++p;
-            ++t;
-        } else if (p < pattern.size() && pattern[p] == '*') {
-            star = p++;
-            mark = t;
-        } else if (star != std::string::npos) {
-            p = star + 1;
-            t = ++mark;
-        } else {
-            return false;
-        }
-    }
-    while (p < pattern.size() && pattern[p] == '*') ++p;
-    return p == pattern.size();
-}
-
-bool is_noise_dir(const std::string& name) {
-    return name == ".git" || name == "build" || name == "node_modules" ||
-           name == ".tapto" || name == ".vs" || name == ".vscode";
 }
 
 // --- path sandbox ---------------------------------------------------------
@@ -219,8 +169,35 @@ const fs::path& sandbox_root() {
     return root;
 }
 
+// The folders granted with /add-folder, or null. Set by main through
+// set_granted_folders(); read on every path resolution, so a grant made
+// mid-session is seen at once.
+const FolderSet* g_folders = nullptr;
+
+// True if `path` is `root` or under it, both already canonical.
+bool is_under(const fs::path& root, const fs::path& path) {
+    const fs::path rel = path.lexically_relative(root);
+    return !rel.empty() && *rel.begin() != fs::path("..");
+}
+
+// The writable granted folder that owns `resolved`, or null.
+const Folder* writable_owner(const fs::path& resolved) {
+    if (!g_folders) return nullptr;
+    for (const auto& f : g_folders->folders()) {
+        if (f.writable && is_under(f.root, resolved)) return &f;
+    }
+    return nullptr;
+}
+
+// What a path may reach. Files: the working directory and, on top of it, the
+// granted folders marked writable -- the editor's and find_files' world.
+// WorkingDir: the working directory alone -- where commands run and what
+// their path arguments may name, since a grant is about files, not about
+// running things elsewhere.
+enum class Scope { Files, WorkingDir };
+
 // Resolve `input` (absolute, or relative to `base`) and confirm it stays
-// within the sandbox root. `base` (default: the sandbox root itself) is the
+// within the sandbox. `base` (default: the sandbox root itself) is the
 // directory relative paths are resolved against — e.g. a `cwd` supplied to a
 // command — so a caller can target a subfolder without ever escaping the root:
 // the final check below still pins the result to the sandbox root.
@@ -228,34 +205,86 @@ const fs::path& sandbox_root() {
 // prefix, so attempts to escape via those are caught. On success fills `out`
 // with the resolved absolute path and returns true; otherwise sets `error` and
 // returns false.
+//
+// With Scope::Files a path may also land in a writable granted folder, written
+// either as "<label>/<rest>" or as an absolute path under its root. The label
+// form is taken only when the working directory has no entry of that name,
+// so a project's own subfolder always wins over a grant that happens to share
+// its name; the absolute form is always unambiguous.
 bool resolve_in_sandbox(const std::string& input, fs::path& out, std::string& error,
-                        const fs::path& base = fs::path()) {
+                        const fs::path& base = fs::path(), Scope scope = Scope::Files) {
     const fs::path& root = sandbox_root();
     const fs::path anchor = base.empty() ? root : base;
     std::error_code ec;
     fs::path in_path(input);
+
+    if (scope == Scope::Files && g_folders && !in_path.is_absolute() && !in_path.empty() &&
+        base.empty()) {
+        const std::string head = in_path.begin()->string();
+        const Folder* f = g_folders->get(head);
+        if (f && !fs::exists(anchor / head, ec)) {
+            if (!f->writable) {
+                error = "ERROR: '" + input + "' is in '" + f->label + "', which the user "
+                        "granted read-only. Read it with read_file; to change it, ask the "
+                        "user to grant the folder read-write with /add-folder <path> rw.";
+                return false;
+            }
+            fs::path rest;
+            for (auto it = std::next(in_path.begin()); it != in_path.end(); ++it) rest /= *it;
+            fs::path abs = f->root / rest;
+            fs::path resolved = fs::weakly_canonical(abs, ec);
+            if (ec) resolved = abs.lexically_normal();
+            if (is_under(f->root, resolved)) {
+                out = resolved;
+                return true;
+            }
+        }
+    }
+
     fs::path abs = in_path.is_absolute() ? in_path : (anchor / in_path);
     fs::path resolved = fs::weakly_canonical(abs, ec);
     if (ec) resolved = abs.lexically_normal();
 
-    fs::path rel = resolved.lexically_relative(root);
-    if (rel.empty() || *rel.begin() == fs::path("..")) {
-        error = "ERROR: '" + input + "' is outside the working directory. "
-                "tapto-code can only access the folder it was started in and its "
-                "subdirectories.";
-        return false;
+    if (is_under(root, resolved)) {
+        out = resolved;
+        return true;
     }
-    out = resolved;
-    return true;
+    if (scope == Scope::Files && writable_owner(resolved)) {
+        out = resolved;
+        return true;
+    }
+
+    // A path in a folder the user granted read-only: say so, and say where
+    // reading it is possible, rather than calling it unreachable.
+    if (scope == Scope::Files && g_folders) {
+        for (const auto& f : g_folders->folders()) {
+            if (!f.writable && is_under(f.root, resolved)) {
+                error = "ERROR: '" + input + "' is in '" + f.label + "', which the user "
+                        "granted read-only. Read it with read_file; to change it, ask the "
+                        "user to grant the folder read-write with /add-folder <path> rw.";
+                return false;
+            }
+        }
+    }
+    error = "ERROR: '" + input + "' is outside the working directory. "
+            "tapto-code can only access the folder it was started in and its "
+            "subdirectories" +
+            std::string(scope == Scope::Files && g_folders && !g_folders->empty()
+                            ? ", plus any folder the user has granted read-write."
+                            : ".");
+    return false;
 }
 
-// True if `resolved` (already inside the sandbox) is the repository's .git
+// True if `resolved` (already inside the sandbox) is a repository's .git
 // directory or anything under it. The model has no reason to write there, and
 // a writable .git turns every allow-listed git command into code execution:
 // .git/config can name a core.fsmonitor or core.hooksPath command that even
-// `git status` runs, and .git/hooks/* run on commit.
+// `git status` runs, and .git/hooks/* run on commit. Checked against whichever
+// root the path landed in, so a writable grant is covered too.
 bool in_git_dir(const fs::path& resolved) {
-    for (const auto& part : resolved.lexically_relative(sandbox_root())) {
+    const Folder* owner = writable_owner(resolved);
+    const fs::path& root = owner ? owner->root : sandbox_root();
+    for (const auto& part : resolved.lexically_relative(root)) {
         if (part == ".git") return true;
     }
     return false;
@@ -518,7 +547,13 @@ std::string execute_find_files(Context& /*context*/, const json& in) {
             // Report paths relative to the sandbox root so they match how the
             // model supplies paths and round-trip back into the other tools.
             // (The iterator yields absolute paths because `base` is absolute.)
-            m.path = p.lexically_relative(sandbox_root()).generic_string();
+            // A hit inside a writable granted folder is shown as
+            // "<label>/<rest>", which the editor accepts back.
+            if (const Folder* owner = writable_owner(p); owner && !is_under(sandbox_root(), p)) {
+                m.path = g_folders->display(p);
+            } else {
+                m.path = p.lexically_relative(sandbox_root()).generic_string();
+            }
             if (m.path.empty()) m.path = p.generic_string();
 
             if (has_query) {
@@ -678,7 +713,7 @@ bool build_argv(const std::string& tpl, const std::vector<std::string>& args,
     auto subst_path = [&](const std::string& value, std::string& out) -> bool {
         fs::path resolved;
         std::string perr;
-        if (!resolve_in_sandbox(value, resolved, perr)) { error = perr; return false; }
+        if (!resolve_in_sandbox(value, resolved, perr, fs::path(), Scope::WorkingDir)) { error = perr; return false; }
         out = resolved.string();
         return true;
     };
@@ -1191,7 +1226,7 @@ std::string execute_run_command(Context& /*context*/, const json& in) {
             if (!in["cwd"].is_string()) return "ERROR: 'cwd' must be a string.";
             const std::string raw = in["cwd"].get<std::string>();
             std::string err;
-            if (!resolve_in_sandbox(raw, base, err)) return err;
+            if (!resolve_in_sandbox(raw, base, err, fs::path(), Scope::WorkingDir)) return err;
             std::error_code ec;
             if (!fs::is_directory(base, ec)) {
                 return "ERROR: cwd '" + raw + "' is not an existing directory. "
@@ -1353,6 +1388,10 @@ std::string display_run_command(const json& input) {
 bool is_builtin_command(const std::string& name) {
     return name == "wc" || name == "head" || name == "tail" ||
            name == "cat" || name == "ls" || name == "tree";
+}
+
+void set_granted_folders(const FolderSet* folders) {
+    g_folders = folders;
 }
 
 std::vector<ToolSpec> builtin_tools() {
