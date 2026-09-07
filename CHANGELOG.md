@@ -31,6 +31,8 @@ carries everything else.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-09-07
+
 ### Added
 
 - `/env` — shows the session environment: working directory, provider/model,
@@ -140,6 +142,13 @@ carries everything else.
   the file's raw lines and edits only the specific key's line, so everything
   else is left exactly as written. ([af76f98])
 
+- Building on Windows/MSVC: Shining Light's Win64 OpenSSL is found with a
+  CMake older than 3.27, which does not search its `lib/VC/x64/MD` layout; a
+  host with no OpenSSL at all fetches a pinned, checksummed prebuilt
+  (FireDaemon 3.5.4) instead of failing; and the code compiles against
+  OpenSSL 4.0, where `X509_get_subject_name()` returns a const pointer.
+  ([19c04bc])
+
 ## [0.2.0] — 2026-08-14
 
 ### Added
@@ -185,7 +194,8 @@ provider's name when `provider` is absent.
 Initial release: an agent that reads, writes and runs code in a sandboxed
 project directory, against Claude, OpenAI or Gemini. ([d9ac02c])
 
-[Unreleased]: https://github.com/centlakestefan/tapto-code/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/centlakestefan/tapto-code/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/centlakestefan/tapto-code/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/centlakestefan/tapto-code/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/centlakestefan/tapto-code/releases/tag/v0.1.0
 [d9ac02c]: https://github.com/centlakestefan/tapto-code/commit/d9ac02c
