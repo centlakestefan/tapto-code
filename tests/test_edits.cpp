@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Centlake Software AB
 //
-// Line-ending behaviour of the text editor tool.
+// Line-ending behaviour of the text editor tool, and the status-line labels.
 //
 // The model only ever sees the CR-stripped rendering `view` produces, so it
 // composes edits in LF terms. A file checked out on Windows holds CRLF, and a
@@ -355,6 +355,45 @@ int main() {
     }
 
     fs::remove_all(kDir, ec);
+
+    // --- status-line labels -------------------------------------------------
+    // Each tool's `display` hook, reached the way the backends reach it. A
+    // missing hook shows the raw tool name and fails nothing, so this is the
+    // only place a regression would surface.
+    {
+        const auto& tools = ctx.tools;
+        auto label = [&](const char* tool, const json& in) {
+            return getToolDisplayName(tools, tool, in);
+        };
+        CHECK_EQ(label("str_replace_based_edit_tool",
+                       json{{"command", "view"}, {"path", "src/foo.cpp"}}),
+                 "View src/foo.cpp");
+        CHECK_EQ(label("str_replace_based_edit_tool",
+                       json{{"command", "view"}, {"path", "src/foo.cpp"}, {"view_range", {10, 50}}}),
+                 "View src/foo.cpp:10-50");
+        CHECK_EQ(label("str_replace_based_edit_tool",
+                       json{{"command", "view"}, {"path", "src/foo.cpp"}, {"view_range", "[10, -1]"}}),
+                 "View src/foo.cpp:10-EOF");
+        CHECK_EQ(label("str_replace_based_edit_tool",
+                       json{{"command", "create"}, {"path", "a.txt"}}),
+                 "Create a.txt");
+        CHECK_EQ(label("str_replace_based_edit_tool",
+                       json{{"command", "str_replace"}, {"path", "a.txt"}}),
+                 "Edit a.txt");
+        CHECK_EQ(label("str_replace_based_edit_tool",
+                       json{{"command", "insert"}, {"path", "a.txt"}}),
+                 "Insert a.txt");
+        CHECK_EQ(label("find_files", json{{"filename", "*.cpp"}}), "Find *.cpp");
+        CHECK_EQ(label("find_files", json{{"filename", "*.cpp"}, {"search_string", "main"}}),
+                 "Search *.cpp ~\"main\"");
+        CHECK_EQ(label("list_commands", json::object()), "List commands");
+        CHECK_EQ(label("run_command", json{{"name", "build"}}), "Run build");
+        CHECK_EQ(label("run_command", json{{"name", "build"}, {"args", {"-j", "8"}}}),
+                 "Run build -j 8");
+        CHECK_EQ(label("run_command", json{{"name", "ls"}, {"path", "driver"}}),
+                 "Run ls driver");
+        CHECK_EQ(label("no_such_tool", json::object()), "no_such_tool");
+    }
 
     std::cout << (g_failures ? "FAILED " : "ok ") << (g_checks - g_failures) << "/" << g_checks
               << " checks\n";

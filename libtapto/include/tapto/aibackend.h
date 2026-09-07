@@ -54,7 +54,7 @@ public:
     virtual void beginWithSummary(const std::string& summaryText) = 0;
 
     // Compaction input trimming (used by the /compact command). Summarizing
-    // the conversation means *sending it* — so this is the single largest
+    // the conversation means *sending it* -- so this is the single largest
     // request of the session, carrying every file dump the tools produced.
     // buildTrimmedHistoryForSummary() returns a *copy* of the current history
     // with any oversized tool-result payload replaced by a short placeholder,
@@ -64,8 +64,11 @@ public:
     // The live conversation (m_conversation_history) is never touched: on a
     // successful compact it is replaced by the summary, and on failure the
     // caller restores the original history it snapshot. Only *large results*
-    // are shrunk — the tool *calls* (which file was read, what was edited) are
+    // are shrunk -- the tool *calls* (which file was read, what was edited) are
     // left intact, and that pairing is exactly what the summarizer needs.
+    //
+    // Header-only on purpose: it walks the three history shapes by their JSON
+    // and needs nothing from the provider, so every backend gets it for free.
     nlohmann::json buildTrimmedHistoryForSummary() {
         using json = nlohmann::json;
         json history = getHistory();
@@ -77,7 +80,7 @@ public:
                  + std::to_string(len) + " chars)]";
         };
         // Shrink a payload in place if it exceeds the limit; leave it alone if
-        // not (or if it is not a string — short/structured output is kept).
+        // not (or if it is not a string -- short/structured output is kept).
         auto shrink = [&](json& c) {
             if (c.is_string()) {
                 std::string s = c.get<std::string>();

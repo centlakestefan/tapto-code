@@ -11,8 +11,10 @@
 #include <string>
 #include <thread>
 
+#include "tapto/base64.h"
 #include "tapto/encoding.h"
 #include "tapto/log.h"
+#include "tapto/tool_image.h"
 #include "tapto/ui.h"
 
 using json = nlohmann::json;
@@ -40,8 +42,8 @@ void GeminiClient::init_api_client() {
         m_api_client->enable_server_certificate_verification(true);
     }
 
-    m_api_client->set_connection_timeout(30);
-    m_api_client->set_read_timeout(120);
+    m_api_client->set_connection_timeout(m_config->connectionTimeoutSeconds());
+    m_api_client->set_read_timeout(m_config->readTimeoutSeconds());
     m_api_client->set_keep_alive(true);
 
     mclog("Gemini API client initialized with keep-alive enabled\n");
@@ -118,12 +120,21 @@ nlohmann::json GeminiClient::call_gemini(
         {"maxOutputTokens", m_config->maxOutputTokens()}
     };
 
-    // Provider-level extended-thinking override. Gemini accepts an explicit
-    // thinking_budget of 0 to force thinking off, and >0 to force it on with
-    // that many tokens.
+    // Provider-level extended-thinking override.
+    //
+    // Gemini 3 replaced thinkingBudget with thinkingLevel and rejects a budget
+    // of 0 outright -- HTTP 400 "Request contains an invalid argument", which
+    // gives no hint that this field is the cause. Measured against
+    // gemini-3.6-flash: no thinkingConfig, thinkingBudget=1024 and
+    // thinkingLevel="low" all succeed; thinkingBudget=0 alone fails.
+    //
+    // There is also no true off switch on these models: "low" is the floor, so
+    // a budget of 0 means as little thinking as the model allows rather than
+    // none. Leaving the budget unset sends no field at all, which is the safe
+    // choice for an older model that predates thinkingLevel.
     if (m_thinkingBudget.has_value()) {
         request_body["generationConfig"]["thinkingConfig"] = {
-            {"thinkingBudget", m_thinkingBudget.value()}
+            {"thinkingLevel", m_thinkingBudget.value() > 0 ? "high" : "low"}
         };
     }
 
@@ -377,7 +388,7 @@ std::string GeminiClient::chat(Context& context, const std::string& user_message
             std::string tool_name = func_call["name"];
             json args = func_call.value("args", json::object());
 
-            ui::set_status(getToolDisplayName(tool_name, args), iteration, max_iterations);
+            ui::set_status(getToolDisplayName(context.tools, tool_name, args), iteration, max_iterations);
             mclog("Executing tool: " + tool_name + "\n");
             mclog("Input: " + args.dump(2) + "\n");
 
@@ -386,6 +397,12 @@ std::string GeminiClient::chat(Context& context, const std::string& user_message
             if (it != m_tool_registry.end()) {
                 try {
                     result = tapto::sanitizeToolResult(it->second(args), tool_name);
+                }
+                catch (const tapto::ConnectionLost&) {
+                    // Not answerable by the model: every later call fails the
+                    // same way. End the turn instead of spending a round trip
+                    // on each retry.
+                    throw;
                 }
                 catch (const std::exception& e) {
                     result = "ERROR: Tool execution failed: " + std::string(e.what());
@@ -408,6 +425,25 @@ std::string GeminiClient::chat(Context& context, const std::string& user_message
                     }}
                 }}
             });
+
+            // A functionResponse carries no image, so anything a tool produced
+            // is appended to the same user turn as an inlineData part. Keeping
+            // it in one turn avoids emitting two consecutive user roles, which
+            // the alternation rules would otherwise have to tolerate.
+            tapto::ToolImage image;
+            if (tapto::takeToolImage(context, image)) {
+                if (!image.label.empty()) {
+                    tool_response_parts.push_back({{"text", image.label + ":"}});
+                }
+                tool_response_parts.push_back({
+                    {"inline_data", {
+                        {"mime_type", "image/png"},
+                        {"data", tapto::base64Encode(image.png)}
+                    }}
+                });
+                mclog("Attached a " + std::to_string(image.png.size()) +
+                      " byte image to the tool response turn\n");
+            }
         }
 
         // Send the tool results back. The Gemini REST API only accepts the
@@ -420,6 +456,15 @@ std::string GeminiClient::chat(Context& context, const std::string& user_message
 
         // Check for user interruption before the (potentially slow) API call.
         if (context.cancel && context.cancel->check()) break;
+
+        // See claude.cpp: unbounded image history ends in HTTP 413.
+        if (m_config->keepRecentImages() > 0) {
+            const size_t pruned = tapto::pruneHistoryImages(
+                m_conversation_history, static_cast<size_t>(m_config->keepRecentImages()));
+            if (pruned > 0) {
+                mclog("Pruned " + std::to_string(pruned) + " older image(s) from history\n");
+            }
+        }
 
         ui::set_status("Thinking...", iteration, max_iterations);
         response = call_gemini("", tool_schemas, m_conversation_history);

@@ -49,9 +49,32 @@ carries everything else.
   missing directory is refused with a clear error. It also works for the built-in
   commands (wc/head/tail/cat/ls/tree): a relative path in `args` is resolved
   against `cwd`, so `ls` with `cwd sub` and `ls sub` both list that folder.
+- `connection-timeout` and `read-timeout` config keys (seconds; defaults 30
+  and 300). The reply is not streamed, so `read-timeout` bounds the whole
+  generation: raise it for a slow local model. Both keys are shared with
+  tapto-word, which already documents them and points users here to set them.
 
 ### Changed
 
+- The shared tapto code — the config store and secret resolver, provider
+  resolution, and the three provider clients with the agent loop — now comes
+  from **libtapto**, vendored in-tree under `libtapto/` as a byte-identical
+  copy of the one in tapto-word. The private copies are gone, and the
+  library's unit tests run under `ctest` with this program's. With it come
+  the fixes tapto-vnc had made to its copy:
+  - Claude requests use adaptive thinking (`thinking: {type: adaptive}`, with
+    a summarized display when `print-cot` is on). Before, tapto-code sent no
+    thinking field at all, so Claude did not think; turns now take longer and
+    cost more, and show their reasoning. The old `budget_tokens` form is
+    rejected by Opus 4.7 and later.
+  - An openai-dialect server answering 5xx with a body that says the request
+    itself is unsupported (`not supported`, `unsupported`, `invalid_request`,
+    `does not support`) fails at once with that text instead of being retried
+    five times with backoff.
+  - Gemini's read timeout was a hardcoded 120 s; it is now the shared
+    `read-timeout` (default 300 s). Claude's 300 s is unchanged but configurable.
+  - The trace file gains a `usage:` line per request (input, output and, for
+    Claude, cache read/write tokens) and the model's closing text.
 - `/compact` summarizes a *trimmed* view of the conversation rather than the
   raw one: tool outputs over ~2 KB are swapped for a short placeholder before
   the model is asked to summarize, while the tool calls (which files were read

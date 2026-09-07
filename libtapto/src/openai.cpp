@@ -11,9 +11,12 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <vector>
 
+#include "tapto/base64.h"
 #include "tapto/encoding.h"
 #include "tapto/log.h"
+#include "tapto/tool_image.h"
 #include "tapto/ui.h"
 
 using json = nlohmann::json;
@@ -21,20 +24,20 @@ namespace ui = tapto::ui;
 
 namespace {
 
-/// <summary>Reasoning-capable models emit chain-of-thought in a separate
-/// field on the assistant message. OpenAI o-series / gpt-5 use the field
-/// name `reasoning`; most OpenAI-compatible adapters (llama.cpp, vLLM,
-/// DeepSeek, Qwen, sglang, …) use `reasoning_content`. Tries `reasoning`
-/// first, then falls back to `reasoning_content`. Returns an empty string
-/// when neither field is present or non-empty.</summary>
+/// <summary>Field names carrying chain-of-thought on an assistant message.
+/// There is no standard: vLLM, llama.cpp and sglang with the deepseek/qwen
+/// templates use `reasoning_content`, while some gateways and newer builds use
+/// a bare `reasoning`. Both are checked, in that order.</summary>
+const char* const kReasoningFields[] = {"reasoning_content", "reasoning"};
+
+/// <summary>Returns the assistant message's chain-of-thought as a string when
+/// present and non-empty, otherwise an empty string.</summary>
 std::string extractReasoning(const json& message) {
-    // OpenAI-native field (o-series, gpt-5)
-    if (message.contains("reasoning") && message["reasoning"].is_string()) {
-        return message["reasoning"].get<std::string>();
-    }
-    // OpenAI-compatible adapter field (DeepSeek, llama.cpp, vLLM, …)
-    if (message.contains("reasoning_content") && message["reasoning_content"].is_string()) {
-        return message["reasoning_content"].get<std::string>();
+    for (const char* field : kReasoningFields) {
+        if (!message.contains(field) || message[field].is_null()) continue;
+        if (!message[field].is_string()) continue;
+        const std::string value = message[field].get<std::string>();
+        if (!value.empty()) return value;
     }
     return "";
 }
@@ -86,13 +89,13 @@ std::string extractContent(const json& message) {
 }
 
 /// <summary>Strip per-turn-only fields from an assistant message before
-/// echoing it back to the server in conversation history. `reasoning`
-/// (OpenAI o-series) and `reasoning_content` (most adapters) are
-/// chain-of-thought scratch that some providers reject when sent back,
-/// and all providers waste tokens reading them.</summary>
+/// echoing it back to the server in conversation history. `reasoning_content`
+/// is chain-of-thought scratch that some providers (DeepSeek's hosted API)
+/// reject when sent back, and all providers waste tokens reading it.</summary>
 json historyMessage(json message) {
-    message.erase("reasoning");
-    message.erase("reasoning_content");
+    for (const char* field : kReasoningFields) {
+        message.erase(field);
+    }
     return message;
 }
 
@@ -115,8 +118,8 @@ void OpenAIClient::init_api_client() {
         m_api_client->enable_server_certificate_verification(true);
     }
 
-    m_api_client->set_connection_timeout(m_config->openaiConnectionTimeoutSeconds());
-    m_api_client->set_read_timeout(m_config->openaiReadTimeoutSeconds());
+    m_api_client->set_connection_timeout(m_config->connectionTimeoutSeconds());
+    m_api_client->set_read_timeout(m_config->readTimeoutSeconds());
     m_api_client->set_keep_alive(true);
 
     mclog("API client initialized with keep-alive enabled\n");
@@ -262,6 +265,16 @@ json OpenAIClient::call_openai(const std::string& user_message, const json& tool
                 mclog("[usage] provider did not report input tokens "
                       "(no usage.input_tokens / usage.prompt_tokens)\n");
             }
+            // Logged in full mainly to make image handling observable. A vision
+            // model resizes an image to its own pixel budget before tokenising
+            // it, and the token count is the only report of what it decided:
+            // the difference this call makes to prompt_tokens is the image's
+            // cost.
+            if (usage.is_object() && !usage.empty()) {
+                mclog("usage: prompt=" + std::to_string(usage.value("prompt_tokens", 0)) +
+                      " completion=" + std::to_string(usage.value("completion_tokens", 0)) +
+                      " total=" + std::to_string(usage.value("total_tokens", 0)) + "\n");
+            }
             return resp;
         }
 
@@ -332,11 +345,49 @@ json OpenAIClient::call_openai(const std::string& user_message, const json& tool
                 exception_msg << "Client error (" << status << "): " << error_detail;
                 break;
             }
+            // A per-prompt image cap is a server-side limit with a client-side
+            // remedy, and the server's wording does not say so.
+            if (error_detail.find("image") != std::string::npos &&
+                (error_detail.find("At most") != std::string::npos ||
+                 error_detail.find("limit") != std::string::npos)) {
+                exception_msg << "\nThe server caps how many images one prompt may carry. Lower "
+                                 "'keep-recent-images' in the tapto config to at or below that "
+                                 "number (it is currently "
+                              << m_config->keepRecentImages()
+                              << "), or restart the server with a higher "
+                                 "--limit-mm-per-prompt image=N.";
+            }
             throw std::runtime_error(exception_msg.str());
         }
 
-        // Server errors (5xx) - can be retried
+        // Server errors (5xx) - can be retried...
         if (status >= 500 && status < 600) {
+            // ...unless the body says the request itself is the problem.
+            //
+            // OpenAI-compatible servers do not all classify errors the same
+            // way: llama.cpp answers "image input is not supported" with a 500
+            // even though it is a permanent property of the loaded model, not a
+            // transient fault. Retrying that five times with backoff wastes
+            // over a minute and buries the one line that explains the failure.
+            {
+                std::string lowered = res->body;
+                std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                static const char* kPermanent[] = {
+                    "not supported", "unsupported", "invalid_request", "does not support",
+                };
+                for (const char* marker : kPermanent) {
+                    if (lowered.find(marker) != std::string::npos) {
+                        std::string detail = res->body.length() > 500
+                                                 ? res->body.substr(0, 500) + "..." : res->body;
+                        mclog("Permanent server error, not retrying: " + detail + "\n");
+                        throw std::runtime_error(
+                            "Server rejected the request (" + std::to_string(status) +
+                            "), and the error is not transient so it was not retried: " + detail);
+                    }
+                }
+            }
+
             if (server_error_retries >= MAX_SERVER_ERROR_RETRIES) {
                 std::string error_detail = res->body.length() > 500 ? res->body.substr(0, 500) + "..." : res->body;
                 std::ostringstream err;
@@ -478,6 +529,14 @@ std::string OpenAIClient::chat(Context& context, const std::string& user_message
         }
 
         // Process each tool call
+        // Images produced by tools this round. They cannot travel inside the
+        // tool results: an OpenAI `role: "tool"` message carries text only.
+        // They also cannot be interleaved between tool results, because every
+        // tool_call in the assistant message must be answered before any other
+        // message appears. So they are collected here and delivered as one
+        // user turn once the whole round is answered.
+        std::vector<tapto::ToolImage> pending_images;
+
         for (const auto& tool_call : message["tool_calls"]) {
             std::string tool_id = tool_call["id"];
             std::string tool_name = tool_call["function"]["name"];
@@ -512,7 +571,7 @@ std::string OpenAIClient::chat(Context& context, const std::string& user_message
                 continue;
             }
 
-            ui::set_status(getToolDisplayName(tool_name, tool_input), iteration, max_iterations);
+            ui::set_status(getToolDisplayName(context.tools, tool_name, tool_input), iteration, max_iterations);
             mclog("Executing tool: " + tool_name + "\n");
             mclog("Input: " + tool_input.dump(2) + "\n");
 
@@ -520,6 +579,12 @@ std::string OpenAIClient::chat(Context& context, const std::string& user_message
             if (it != m_tool_registry.end()) {
                 try {
                     result = tapto::sanitizeToolResult(it->second(tool_input), tool_name);
+                }
+                catch (const tapto::ConnectionLost&) {
+                    // Not answerable by the model: every later call fails the
+                    // same way. End the turn instead of spending a round trip
+                    // on each retry.
+                    throw;
                 }
                 catch (const std::exception& e) {
                     result = "ERROR: Tool execution failed: " + std::string(e.what());
@@ -538,10 +603,42 @@ std::string OpenAIClient::chat(Context& context, const std::string& user_message
                 {"tool_call_id", tool_id},
                 {"content", result}
             });
+
+            tapto::ToolImage image;
+            if (tapto::takeToolImage(context, image)) {
+                pending_images.push_back(std::move(image));
+            }
+        }
+
+        // Every tool_call is now answered, so it is safe to add the images.
+        if (!pending_images.empty()) {
+            json parts = json::array();
+            for (const auto& image : pending_images) {
+                if (!image.label.empty()) {
+                    parts.push_back({{"type", "text"}, {"text", image.label + ":"}});
+                }
+                parts.push_back({
+                    {"type", "image_url"},
+                    {"image_url", {{"url", "data:image/png;base64," +
+                                           tapto::base64Encode(image.png)}}}
+                });
+            }
+            m_conversation_history.push_back({{"role", "user"}, {"content", parts}});
+            mclog("Attached " + std::to_string(pending_images.size()) +
+                  " image(s) as a user turn\n");
         }
 
         // Check for user interruption before the (potentially slow) API call.
         if (context.cancel && context.cancel->check()) break;
+
+        // See claude.cpp: unbounded image history ends in HTTP 413.
+        if (m_config->keepRecentImages() > 0) {
+            const size_t pruned = tapto::pruneHistoryImages(
+                m_conversation_history, static_cast<size_t>(m_config->keepRecentImages()));
+            if (pruned > 0) {
+                mclog("Pruned " + std::to_string(pruned) + " older image(s) from history\n");
+            }
+        }
 
         ui::set_status("Thinking...", iteration, max_iterations);
         response = call_openai("", tools, m_conversation_history);
@@ -580,6 +677,19 @@ std::string OpenAIClient::chat(Context& context, const std::string& user_message
     mclog("=== Final Response === " + choice.value("finish_reason", "unknown") + "\n");
 
     ui::end_status();
+
+    // The closing message never passes through the loop above, because the loop
+    // exits precisely when a message arrives without tool calls -- so the one
+    // thing missing from the trace was the model's summary of what it had just
+    // done, which is the part a human reads first. Logged here rather than at
+    // the top of the loop so it also covers a turn stopped by the iteration
+    // cap, whose message never reached the loop body either.
+    {
+        const std::string cot = extractReasoning(message);
+        if (!cot.empty()) mclog("Assistant CoT: " + cot + "\n");
+        const std::string text = extractContent(message);
+        if (!text.empty()) mclog("Assistant text: " + text + "\n");
+    }
 
     // Collect the assistant's final text reply (falling back to reasoning
     // content for reasoning models that emit only that).

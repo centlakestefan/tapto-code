@@ -11,8 +11,10 @@
 #include <string>
 #include <thread>
 
+#include "tapto/base64.h"
 #include "tapto/encoding.h"
 #include "tapto/log.h"
+#include "tapto/tool_image.h"
 #include "tapto/ui.h"
 
 using json = nlohmann::json;
@@ -35,8 +37,8 @@ void ClaudeClient::init_api_client() {
         m_api_client->enable_server_certificate_verification(true);
     }
 
-    m_api_client->set_connection_timeout(CONNECTION_TIMEOUT_SECONDS);
-    m_api_client->set_read_timeout(READ_TIMEOUT_SECONDS);
+    m_api_client->set_connection_timeout(m_config->connectionTimeoutSeconds());
+    m_api_client->set_read_timeout(m_config->readTimeoutSeconds());
     m_api_client->set_keep_alive(true);
 
     mclog("API client initialized with keep-alive enabled\n");
@@ -65,23 +67,42 @@ json ClaudeClient::call_claude(const std::string& user_message, const json& tool
     // Cache up to the second-to-last message (everything before the new user message)
     if (messages.size() >= 2) {
         size_t cache_index = messages.size() - 2;
-        auto& cache_msg = messages[cache_index];
 
-        // Handle both string and array content
-        if (cache_msg["content"].is_string()) {
-            // Convert to array format with cache control
-            std::string content_text = cache_msg["content"];
-            cache_msg["content"] = json::array({
-                {
-                    {"type", "text"},
-                    {"text", content_text},
-                    {"cache_control", {{"type", "ephemeral"}}}
-                }
-                });
+        // Image pruning rewrites older entries in place, and prompt caching is
+        // a prefix match, so a breakpoint sitting after a rewritten entry can
+        // never hit: the bytes beneath it differ from the previous request.
+        // Pull the breakpoint back to just before the oldest surviving image,
+        // which is the newest point that is guaranteed frozen. Without this
+        // the whole transcript is re-read at full price on every turn. A
+        // history with no images at all is unaffected.
+        const size_t first_live = tapto::firstLiveImageMessage(messages);
+        if (first_live > 0 && first_live - 1 < cache_index) {
+            cache_index = first_live - 1;
+        } else if (first_live == 0) {
+            cache_index = messages.size();  // nothing stable to cache
         }
-        else if (cache_msg["content"].is_array() && !cache_msg["content"].empty()) {
-            // Add cache control to last block in array
-            cache_msg["content"].back()["cache_control"] = { {"type", "ephemeral"} };
+
+        if (cache_index >= messages.size()) {
+            mclog("No stable prefix to cache this turn\n");
+        } else {
+            auto& cache_msg = messages[cache_index];
+
+            // Handle both string and array content
+            if (cache_msg["content"].is_string()) {
+                // Convert to array format with cache control
+                std::string content_text = cache_msg["content"];
+                cache_msg["content"] = json::array({
+                    {
+                        {"type", "text"},
+                        {"text", content_text},
+                        {"cache_control", {{"type", "ephemeral"}}}
+                    }
+                    });
+            }
+            else if (cache_msg["content"].is_array() && !cache_msg["content"].empty()) {
+                // Add cache control to last block in array
+                cache_msg["content"].back()["cache_control"] = { {"type", "ephemeral"} };
+            }
         }
     }
 
@@ -92,14 +113,23 @@ json ClaudeClient::call_claude(const std::string& user_message, const json& tool
         {"messages", messages}
     };
 
-    // Provider-level extended-thinking override. Claude has no explicit
-    // "thinking off" — omitting the field is already off — so we only emit
-    // the field for budget > 0.
-    if (m_thinkingBudget.has_value() && m_thinkingBudget.value() > 0) {
-        request_body["thinking"] = {
-            {"type", "enabled"},
-            {"budget_tokens", m_thinkingBudget.value()}
-        };
+    // Adaptive thinking. The older {"type":"enabled","budget_tokens":N} form
+    // this client used is *removed* on Opus 4.7 and later and returns a 400,
+    // so depth is controlled through output_config.effort instead of a token
+    // budget. Sending it explicitly also matters on Opus 4.7/4.8, where
+    // omitting the field means no thinking at all. A thinking budget of
+    // exactly 0 is the one way to say "off".
+    //
+    // display: thinking text is omitted by default on current models, so a
+    // client that wants to show reasoning has to ask for a summary.
+    if (!m_thinkingBudget.has_value() || m_thinkingBudget.value() != 0) {
+        json thinking = {{"type", "adaptive"}};
+        if (m_config->printCot()) thinking["display"] = "summarized";
+        request_body["thinking"] = thinking;
+    }
+
+    if (!m_config->effort().empty()) {
+        request_body["output_config"] = {{"effort", m_config->effort()}};
     }
 
     // System prompt with caching (only when one is set).
@@ -182,7 +212,21 @@ json ClaudeClient::call_claude(const std::string& user_message, const json& tool
         // Success
         if (status == 200) {
             json resp = json::parse(res->body);
-            m_lastInputTokens = resp.value("usage", json::object()).value("input_tokens", 0);
+            // Kept for the caller (context-window fill) and logged so cache
+            // behaviour is observable: a cache_read_input_tokens that stays at
+            // zero across turns means the prefix is being invalidated, usually
+            // by something rewriting earlier messages.
+            if (resp.contains("usage") && resp["usage"].is_object()) {
+                const json& usage = resp["usage"];
+                m_lastInputTokens = usage.value("input_tokens", 0);
+                mclog("usage: input=" + std::to_string(usage.value("input_tokens", 0)) +
+                      " output=" + std::to_string(usage.value("output_tokens", 0)) +
+                      " cache_read=" + std::to_string(usage.value("cache_read_input_tokens", 0)) +
+                      " cache_write=" + std::to_string(usage.value("cache_creation_input_tokens", 0)) +
+                      "\n");
+            } else {
+                m_lastInputTokens = 0;
+            }
             return resp;
         }
 
@@ -405,7 +449,7 @@ std::string ClaudeClient::chat(Context& context, const std::string& user_message
                 std::string tool_id = block["id"];
                 json tool_input = block["input"];
 
-                ui::set_status(getToolDisplayName(tool_name, tool_input), iteration, max_iterations);
+                ui::set_status(getToolDisplayName(context.tools, tool_name, tool_input), iteration, max_iterations);
                 mclog("Executing tool: " + tool_name + "\n");
                 mclog("Input: " + tool_input.dump(2) + "\n");
 
@@ -414,6 +458,12 @@ std::string ClaudeClient::chat(Context& context, const std::string& user_message
                 if (it != m_tool_registry.end()) {
                     try {
                         result = it->second(tool_input);
+                    }
+                    catch (const tapto::ConnectionLost&) {
+                        // Not answerable by the model: every later call fails
+                        // the same way. End the turn instead of spending a
+                        // round trip on each retry.
+                        throw;
                     }
                     catch (const std::exception& e) {
                         result = "ERROR: Tool execution failed: " + std::string(e.what());
@@ -427,10 +477,33 @@ std::string ClaudeClient::chat(Context& context, const std::string& user_message
 
                 ui::commit_status(); // lock the tool line into the scroll buffer
 
+                // A tool may have produced an image for the model to look at.
+                // Claude accepts image blocks inside a tool_result, so attach
+                // it to the result of the very tool that produced it -- that
+                // keeps the image unambiguously tied to its action even when
+                // several tools run in one turn.
+                const std::string text = tapto::sanitizeToolResult(result, tool_name);
+                tapto::ToolImage image;
+                json content;
+                if (tapto::takeToolImage(context, image)) {
+                    content = json::array({
+                        json{{"type", "text"}, {"text", text}},
+                        json{{"type", "image"},
+                             {"source", {{"type", "base64"},
+                                         {"media_type", "image/png"},
+                                         {"data", tapto::base64Encode(image.png)}}}},
+                        });
+                    mclog("Attached " + std::to_string(image.png.size()) +
+                          " byte image (" + std::to_string(image.width) + "x" +
+                          std::to_string(image.height) + ") to tool result\n");
+                } else {
+                    content = text;
+                }
+
                 tool_results.push_back({
                     {"type", "tool_result"},
                     {"tool_use_id", tool_id},
-                    {"content", tapto::sanitizeToolResult(result, tool_name)}
+                    {"content", content}
                     });
             }
         }
@@ -443,6 +516,17 @@ std::string ClaudeClient::chat(Context& context, const std::string& user_message
 
         // Check for user interruption before the (potentially slow) API call.
         if (context.cancel && context.cancel->check()) break;
+
+        // Drop all but the newest images before the history is re-sent, or a
+        // long run accumulates megabytes of them and the request is rejected
+        // outright with HTTP 413.
+        if (m_config->keepRecentImages() > 0) {
+            const size_t pruned = tapto::pruneHistoryImages(
+                m_conversation_history, static_cast<size_t>(m_config->keepRecentImages()));
+            if (pruned > 0) {
+                mclog("Pruned " + std::to_string(pruned) + " older image(s) from history\n");
+            }
+        }
 
         ui::set_status("Thinking...", iteration, max_iterations);
         response = call_claude("", tools, m_conversation_history);
@@ -491,13 +575,22 @@ std::string ClaudeClient::chat(Context& context, const std::string& user_message
     // blocks if the model emitted no text (a thinking model that answers
     // entirely in reasoning — e.g. a /compact summary request) matching the
     // OpenAI backend's extraction, so no summary is silently dropped.
+    //
+    // Also logged here: the closing message never passes through the loop
+    // above, because the loop exits precisely when a message arrives without a
+    // tool_use block -- so the one thing missing from the trace was the model's
+    // summary of what it had just done, which is the part a human reads first.
     std::string reply;
     std::string thinking;
     for (const auto& block : response["content"]) {
         if (block.value("type", std::string()) == "text") {
-            reply += block.value("text", std::string());
+            const std::string text = block.value("text", std::string());
+            if (!text.empty()) mclog("assistant says: " + text + "\n");
+            reply += text;
         } else if (block.value("type", std::string()) == "thinking") {
-            thinking += block.value("thinking", std::string());
+            const std::string cot = block.value("thinking", std::string());
+            if (!cot.empty()) mclog("assistant thinks: " + cot + "\n");
+            thinking += cot;
         }
     }
     if (reply.empty() && !thinking.empty()) reply = thinking;

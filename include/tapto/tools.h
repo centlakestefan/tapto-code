@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-#include "tool_registry.h"
+#include "tapto/tool_registry.h"
 
 namespace tapto {
 
