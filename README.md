@@ -93,6 +93,9 @@ Three scopes, in increasing order of precedence:
 When reading, **local overrides global overrides system**. Writes default to
 the **local** scope; pass `--global` or `--system` to target another scope.
 
+A fourth, read-only scope sits above all three: **policy**, what an
+organization mandates. See [Enterprise policy](#enterprise-policy) below.
+
 Local (project) settings are stored **centrally**, keyed by the working
 directory, under `~/.tapto/projects/` — not inside the project folder. So
 nothing is written into your repo, and cloning a repo can't bring its own config
@@ -108,6 +111,55 @@ tapto-code config list                    # all effective values
 tapto-code config list --show-origin      # prefix each entry with its scope
 tapto-code --global config list           # only the global scope
 tapto-code config unset model             # remove from local
+```
+
+### Enterprise policy
+
+An administrator can fix any config key for every user, and confine which
+providers they may use, through Group Policy. A key set by policy overrides
+every user scope, `config set` refuses to change it, and `config list
+--show-origin` shows it as `policy`. A key the policy does not set is left to
+the user, so a policy can be as narrow as one locked endpoint or as wide as the
+whole configuration.
+
+Where policy is read from:
+
+| Platform | Source                                                          |
+| -------- | --------------------------------------------------------------- |
+| Windows  | `HKLM\SOFTWARE\Policies\Centlake\tapto` (machine, wins) and `HKCU\...\tapto` |
+| others   | `/etc/tapto/policy`, same `key = value` format as the config file |
+
+Value names are the config keys, verbatim. Strings are taken as they are, a
+DWORD becomes its decimal text (so a boolean is `1`/`0`), and a multi-string or
+an ADMX list subkey becomes one comma-separated value. Windows lets only
+administrators write under `SOFTWARE\Policies` and Group Policy re-applies it
+on every refresh, which is why the registry is used rather than a file under
+`ProgramData`; the `--system` file remains the place for defaults users may
+override.
+
+`admx/tapto.admx` and `admx/en-US/tapto.adml` are the Group Policy template.
+Copy them into `%SystemRoot%\PolicyDefinitions` (or the domain's Central
+Store) and the settings appear under *Administrative Templates > Centlake >
+tapto*; Intune takes the same files through ADMX ingestion. The template covers
+the default provider, a `work` provider block, request limits, the two
+restrictions below, and a free-form name/value list for every other key.
+
+Two keys exist only as policy:
+
+```
+allowed-providers = work, review    # the only names --provider or `provider =` may use
+allow-user-providers = 0            # only blocks the policy itself defines are usable
+```
+
+**Never put an API key in a policy**: Group Policy objects are readable by
+every account in the domain. Set `work-api-key` to a reference instead
+(`wincred:tapto/work`, `env:WORK_AI_KEY`, `cmd:...`, see above) and distribute
+the credential separately, or point `work-provider-url` at a gateway that
+authenticates the user.
+
+```sh
+tapto-code --policy config list      # what the policy sets, and nothing else
+tapto-code config list --show-origin # policy entries are marked "policy"
 ```
 
 ## Chat

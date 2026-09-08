@@ -5,6 +5,7 @@
 #include "tapto/config.h"
 #include "tapto/fstools.h"
 #include "tapto/paths.h"
+#include "tapto/policy.h"
 #include "tapto/provider.h"
 #include "tapto/secret.h"
 #include "tapto/tools.h"
@@ -62,7 +63,7 @@ const char* kUsage =
     "\n"
     "Usage:\n"
     "  tapto-code [--provider <name>]                Start an interactive chat (default)\n"
-    "  tapto-code [--system|--global|--local] config <command> [args]\n"
+    "  tapto-code [--system|--global|--local|--policy] config <command> [args]\n"
     "  tapto-code [--system|--global|--local] command <add|remove|list> ...\n"
     "\n"
     "Config commands:\n"
@@ -109,13 +110,22 @@ const char* kUsage =
     "  --system   machine-wide config\n"
     "  --global   current user's config (~/.tapto)\n"
     "  --local    per-folder config (./.tapto); the default for writes\n"
+    "  --policy   what your organization mandates (read-only; see below)\n"
     "\n"
     "Options:\n"
     "  --provider <name>  chat with this provider instead of the configured default\n"
     "  --show-origin      with 'list', prefix each entry with its scope\n"
     "  -h, --help         show this help\n"
     "\n"
-    "Precedence (highest wins): local > global > system\n";
+    "Precedence (highest wins): policy > local > global > system\n"
+    "\n"
+    "Policy is config an administrator sets through Group Policy (registry\n"
+    "values under HKLM or HKCU\\SOFTWARE\\Policies\\Centlake\\tapto, from the\n"
+    "tapto.admx template) or, elsewhere, in /etc/tapto/policy. A key set there\n"
+    "wins over every user scope and cannot be changed with 'config set'; a key\n"
+    "not set there is left to the user. Policy may also confine --provider:\n"
+    "  allowed-providers = work, review    only these names\n"
+    "  allow-user-providers = 0            only providers the policy defines\n";
 
 struct Args {
     std::optional<Level> level;
@@ -194,6 +204,18 @@ int cmd_set(const Args& a) {
         return 2;
     }
     Level level = a.level.value_or(Level::Local);
+    if (level == Level::Policy) {
+        ui::print_error("the policy scope is read-only; it is set by your organization in " +
+                        policy_source());
+        return 2;
+    }
+    // Writing it would succeed and change nothing, since policy is applied
+    // last -- worse than refusing, because the user would think it took.
+    if (is_policy_managed(a.positional[1])) {
+        ui::print_error("'" + a.positional[1] + "' is managed by your organization's policy (" +
+                        policy_source() + ") and cannot be changed here");
+        return 2;
+    }
     auto path = config_path(level);
     Config cfg = Config::load(path);
     cfg.set(a.positional[1], a.positional[2]);
@@ -220,6 +242,15 @@ int cmd_get(const Args& a) {
     }
     const std::string& key = a.positional[1];
 
+    if (a.level == Level::Policy) {
+        for (const auto& e : policy_entries()) {
+            if (e.first == key) {
+                ui::print_line(e.second);
+                return 0;
+            }
+        }
+        return 1; // not found
+    }
     if (a.level) {
         Config cfg = Config::load(config_path(*a.level));
         if (auto value = cfg.get(key)) {
@@ -244,6 +275,11 @@ int cmd_unset(const Args& a) {
         return 2;
     }
     Level level = a.level.value_or(Level::Local);
+    if (level == Level::Policy) {
+        ui::print_error("the policy scope is read-only; it is set by your organization in " +
+                        policy_source());
+        return 2;
+    }
     auto path = config_path(level);
     Config cfg = Config::load(path);
     if (!cfg.unset(a.positional[1])) {
@@ -275,8 +311,12 @@ std::string list_value(const std::string& key, const std::string& value) {
 
 int cmd_list(const Args& a) {
     if (a.level) {
-        Config cfg = Config::load(config_path(*a.level));
-        for (const auto& entry : cfg.entries()) {
+        // The policy scope is not a file on Windows, so it is read through its
+        // own reader; the others are the files they always were.
+        const std::vector<Config::Entry> entries = (*a.level == Level::Policy)
+            ? policy_entries()
+            : Config::load(config_path(*a.level)).entries();
+        for (const auto& entry : entries) {
             ui::print_config_entry(a.show_origin ? level_name(*a.level) : "",
                                    entry.first,
                                    list_value(entry.first, entry.second));
@@ -428,6 +468,10 @@ std::string list_folders_text(const FolderSet& folders) {
 
 // Write a key to the global (user) config scope.
 bool set_global(const std::string& key, const std::string& value) {
+    if (is_policy_managed(key)) {
+        ui::print_error("'" + key + "' is managed by your organization's policy and cannot be set");
+        return false;
+    }
     try {
         auto path = config_path(Level::Global);
         Config cfg = Config::load(path);
@@ -1293,7 +1337,7 @@ int main(int argc, char** argv) {
             if (raw[i] == "--system") level = Level::System;
             else if (raw[i] == "--global") level = Level::Global;
             else if (raw[i] == "--local") level = Level::Local;
-            else break;
+            else break; // --policy has no commands store; it falls through to the error below
         }
         if (i < raw.size() && raw[i] == "command") {
             std::vector<std::string> sub(raw.begin() + i + 1, raw.end());
@@ -1310,6 +1354,7 @@ int main(int argc, char** argv) {
         if (arg == "--system") a.level = Level::System;
         else if (arg == "--global") a.level = Level::Global;
         else if (arg == "--local") a.level = Level::Local;
+        else if (arg == "--policy") a.level = Level::Policy;
         else if (arg == "--show-origin") a.show_origin = true;
         else if (arg == "-h" || arg == "--help") { ui::print_usage(kUsage); return 0; }
         else if (arg == "--provider") {

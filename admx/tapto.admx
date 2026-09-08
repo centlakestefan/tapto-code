@@ -1,0 +1,120 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Group Policy template for the tapto programs (tapto-code, tapto-word,
+  tapto-vnc). Every setting writes a value whose name is the config key the
+  programs read, under
+
+    HKLM\SOFTWARE\Policies\Centlake\tapto     (Computer Configuration; wins)
+    HKCU\SOFTWARE\Policies\Centlake\tapto     (User Configuration)
+
+  A key set here overrides every user scope (local, global, system) and the
+  programs refuse to change it. A setting left "Not Configured" leaves that
+  key to the user. See libtapto/include/tapto/policy.h.
+
+  Install: copy tapto.admx to %SystemRoot%\PolicyDefinitions (or the domain's
+  Central Store, \\<domain>\SYSVOL\<domain>\Policies\PolicyDefinitions) and
+  en-US\tapto.adml into the en-US folder next to it. The settings then appear
+  under Administrative Templates > Centlake > tapto.
+-->
+<policyDefinitions xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   revision="1.0" schemaVersion="1.0"
+                   xmlns="http://schemas.microsoft.com/GroupPolicy/2006/07/PolicyDefinitions">
+  <policyNamespaces>
+    <target prefix="tapto" namespace="Centlake.Policies.Tapto" />
+    <using prefix="windows" namespace="Microsoft.Policies.Windows" />
+  </policyNamespaces>
+  <resources minRequiredRevision="1.0" />
+
+  <categories>
+    <category name="Centlake" displayName="$(string.Centlake)" />
+    <category name="Tapto" displayName="$(string.Tapto)">
+      <parentCategory ref="Centlake" />
+    </category>
+    <category name="Provider" displayName="$(string.Provider)">
+      <parentCategory ref="Tapto" />
+    </category>
+  </categories>
+
+  <policies>
+
+    <!-- provider = <name> -->
+    <policy name="DefaultProvider" class="Both" displayName="$(string.DefaultProvider)"
+            explainText="$(string.DefaultProvider_Explain)" presentation="$(presentation.DefaultProvider)"
+            key="SOFTWARE\Policies\Centlake\tapto">
+      <parentCategory ref="Provider" />
+      <supportedOn ref="windows:SUPPORTED_Windows7" />
+      <elements>
+        <text id="DefaultProvider_Name" valueName="provider" required="true" />
+      </elements>
+    </policy>
+
+    <!-- The "work" provider block: work-provider-type, work-provider-url, work-model, work-api-key.
+         Set "Default provider" to "work" to make it the one used. -->
+    <policy name="WorkProvider" class="Both" displayName="$(string.WorkProvider)"
+            explainText="$(string.WorkProvider_Explain)" presentation="$(presentation.WorkProvider)"
+            key="SOFTWARE\Policies\Centlake\tapto">
+      <parentCategory ref="Provider" />
+      <supportedOn ref="windows:SUPPORTED_Windows7" />
+      <elements>
+        <enum id="WorkProvider_Type" valueName="work-provider-type" required="true">
+          <item displayName="$(string.Dialect_Claude)"><value><string>claude</string></value></item>
+          <item displayName="$(string.Dialect_OpenAI)"><value><string>openai</string></value></item>
+          <item displayName="$(string.Dialect_Gemini)"><value><string>gemini</string></value></item>
+        </enum>
+        <text id="WorkProvider_Url" valueName="work-provider-url" />
+        <text id="WorkProvider_Model" valueName="work-model" />
+        <text id="WorkProvider_ApiKey" valueName="work-api-key" />
+        <text id="WorkProvider_ReasoningEffort" valueName="work-reasoning-effort" />
+      </elements>
+    </policy>
+
+    <!-- allowed-providers = a, b, c -->
+    <policy name="AllowedProviders" class="Both" displayName="$(string.AllowedProviders)"
+            explainText="$(string.AllowedProviders_Explain)" presentation="$(presentation.AllowedProviders)"
+            key="SOFTWARE\Policies\Centlake\tapto">
+      <parentCategory ref="Provider" />
+      <supportedOn ref="windows:SUPPORTED_Windows7" />
+      <elements>
+        <list id="AllowedProviders_List" key="SOFTWARE\Policies\Centlake\tapto\allowed-providers" valuePrefix="" />
+      </elements>
+    </policy>
+
+    <!-- allow-user-providers = 1 | 0 -->
+    <policy name="AllowUserProviders" class="Both" displayName="$(string.AllowUserProviders)"
+            explainText="$(string.AllowUserProviders_Explain)"
+            key="SOFTWARE\Policies\Centlake\tapto" valueName="allow-user-providers">
+      <parentCategory ref="Provider" />
+      <supportedOn ref="windows:SUPPORTED_Windows7" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+
+    <!-- max-output-tokens, max-tool-iterations, connection-timeout, read-timeout -->
+    <policy name="Limits" class="Both" displayName="$(string.Limits)"
+            explainText="$(string.Limits_Explain)" presentation="$(presentation.Limits)"
+            key="SOFTWARE\Policies\Centlake\tapto">
+      <parentCategory ref="Tapto" />
+      <supportedOn ref="windows:SUPPORTED_Windows7" />
+      <elements>
+        <decimal id="Limits_MaxOutputTokens" valueName="max-output-tokens" minValue="1" maxValue="10000000" />
+        <decimal id="Limits_MaxToolIterations" valueName="max-tool-iterations" minValue="1" maxValue="100000" />
+        <decimal id="Limits_ConnectionTimeout" valueName="connection-timeout" minValue="1" maxValue="86400" />
+        <decimal id="Limits_ReadTimeout" valueName="read-timeout" minValue="1" maxValue="86400" />
+      </elements>
+    </policy>
+
+    <!-- Any other key = value the programs read: trace-file, system-prompt,
+         a second provider block (review-provider-type, review-model, ...). -->
+    <policy name="AdditionalSettings" class="Both" displayName="$(string.AdditionalSettings)"
+            explainText="$(string.AdditionalSettings_Explain)" presentation="$(presentation.AdditionalSettings)"
+            key="SOFTWARE\Policies\Centlake\tapto">
+      <parentCategory ref="Tapto" />
+      <supportedOn ref="windows:SUPPORTED_Windows7" />
+      <elements>
+        <list id="AdditionalSettings_List" key="SOFTWARE\Policies\Centlake\tapto" explicitValue="true" />
+      </elements>
+    </policy>
+
+  </policies>
+</policyDefinitions>

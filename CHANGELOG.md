@@ -31,6 +31,15 @@ carries everything else.
 
 ## [Unreleased]
 
+### Added
+
+- Enterprise policy: a read-only `policy` scope above local/global/system, read
+  from `HKLM`/`HKCU\SOFTWARE\Policies\Centlake\tapto` on Windows (what Group
+  Policy writes from the new `admx/tapto.admx` template) and from
+  `/etc/tapto/policy` elsewhere. A key set there wins over every user scope and
+  `config set` refuses it; `--policy config list` shows it. Two policy-only
+  keys confine `--provider`: `allowed-providers` and `allow-user-providers`.
+
 ## [0.3.0] — 2026-09-07
 
 ### Added

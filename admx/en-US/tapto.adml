@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="utf-8"?>
+<policyDefinitionResources xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+                           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                           revision="1.0" schemaVersion="1.0"
+                           xmlns="http://schemas.microsoft.com/GroupPolicy/2006/07/PolicyDefinitions">
+  <displayName>tapto</displayName>
+  <description>Settings for the tapto programs: tapto-code, tapto-word and tapto-vnc.</description>
+  <resources>
+    <stringTable>
+      <string id="Centlake">Centlake</string>
+      <string id="Tapto">tapto</string>
+      <string id="Provider">AI provider</string>
+
+      <string id="Dialect_Claude">Claude (Anthropic API)</string>
+      <string id="Dialect_OpenAI">OpenAI (and OpenAI-compatible servers)</string>
+      <string id="Dialect_Gemini">Gemini (Google API)</string>
+
+      <string id="DefaultProvider">Default provider</string>
+      <string id="DefaultProvider_Explain">The provider the programs use when none is named on the command line.
+
+This is the name of a provider block: "work" for the block configured by the "Work provider" setting, or claude, openai or gemini for the vendor's public API with the user's own key.
+
+Enabled: users cannot change the default provider. They may still pick another with --provider unless "Allow user-defined providers" is disabled or "Allowed providers" is set.
+
+Not configured: the user's own configuration decides.
+
+Writes the config key "provider".</string>
+
+      <string id="WorkProvider">Work provider</string>
+      <string id="WorkProvider_Explain">Configures a provider block named "work": the API shape to speak, the endpoint, the model, and where the API key lives. Set "Default provider" to "work" to make it the one the programs use.
+
+API shape: Claude, OpenAI or Gemini. OpenAI is also the shape most local and gateway servers speak (vLLM, llama.cpp, LiteLLM, Azure OpenAI).
+
+Endpoint URL: leave empty for the vendor's public API. For a gateway or an on-premises server, its base URL, for example https://ai-gateway.example.com/v1.
+
+Model: the model name the endpoint expects. Empty uses the program's default for the API shape.
+
+API key: DO NOT put the key itself here. Group Policy objects are readable by every account in the domain. Put a reference to where the key lives on the user's machine:
+    wincred:tapto/work        a Windows Credential Manager generic credential (cmdkey /generic:tapto/work /user:tapto /pass:...)
+    env:WORK_AI_KEY           an environment variable
+    cmd:some-helper.exe       the first line a command prints
+or point the endpoint at a gateway that authenticates the user, and leave this empty.
+
+Reasoning effort: OpenAI shape only; low, medium or high, sent as reasoning_effort. Leave empty to let the server decide.
+
+Each field that is filled in is locked for the user; a field left empty is left to the user.
+
+Writes the config keys work-provider-type, work-provider-url, work-model, work-api-key and work-reasoning-effort.</string>
+
+      <string id="AllowedProviders">Allowed providers</string>
+      <string id="AllowedProviders_Explain">The only provider names the programs will use, whether picked with --provider or configured as the default. One name per line, for example "work" or "review".
+
+Enabled: any other provider is refused with a message naming the allowed ones. This takes precedence over "Allow user-defined providers".
+
+Not configured: no restriction.
+
+Writes the config key "allowed-providers".</string>
+
+      <string id="AllowUserProviders">Allow user-defined providers</string>
+      <string id="AllowUserProviders_Explain">Whether users may use provider blocks they configured themselves, or the vendors' public APIs with their own keys.
+
+Disabled: only providers this policy defines are usable: the "Default provider", the "Work provider", and any block whose "-provider-type" is set under "Additional settings". Anything else is refused. Use this to keep company data from being sent to a personal account.
+
+Enabled or Not configured: users may configure and use providers of their own.
+
+Writes the config key "allow-user-providers".</string>
+
+      <string id="Limits">Request limits and timeouts</string>
+      <string id="Limits_Explain">Caps on what one request may cost and how long the programs wait for it.
+
+Maximum output tokens: the most the model may generate per request (default 16000).
+
+Maximum tool iterations: how many tool calls one prompt may trigger before the programs stop and ask (default 200).
+
+Connection timeout: seconds to wait for the endpoint to accept a connection (default 30).
+
+Read timeout: seconds to wait for the whole answer; a slow on-premises model may need many minutes (default 300).
+
+Each value filled in is locked for the user.
+
+Writes the config keys max-output-tokens, max-tool-iterations, connection-timeout and read-timeout.</string>
+
+      <string id="AdditionalSettings">Additional settings</string>
+      <string id="AdditionalSettings_Explain">Any other configuration key the programs read, as name and value pairs, for keys this template has no dedicated setting for: trace-file, system-prompt, print-cot, or a second provider block (review-provider-type, review-provider-url, review-model, review-api-key).
+
+Each key listed here is locked for the user. The value names are exactly the keys the programs document; run "tapto-code --help" for the list.
+
+Never put an API key value here; see "Work provider" for the references to use instead.</string>
+    </stringTable>
+
+    <presentationTable>
+      <presentation id="DefaultProvider">
+        <textBox refId="DefaultProvider_Name">
+          <label>Provider name (e.g. work, claude, openai, gemini):</label>
+        </textBox>
+      </presentation>
+
+      <presentation id="WorkProvider">
+        <dropdownList refId="WorkProvider_Type" defaultItem="1">API shape:</dropdownList>
+        <textBox refId="WorkProvider_Url"><label>Endpoint URL:</label></textBox>
+        <textBox refId="WorkProvider_Model"><label>Model:</label></textBox>
+        <textBox refId="WorkProvider_ApiKey"><label>API key reference (wincred:, env:, cmd:), never the key:</label></textBox>
+        <textBox refId="WorkProvider_ReasoningEffort"><label>Reasoning effort (OpenAI shape only):</label></textBox>
+      </presentation>
+
+      <presentation id="AllowedProviders">
+        <listBox refId="AllowedProviders_List">Allowed provider names:</listBox>
+      </presentation>
+
+      <presentation id="Limits">
+        <decimalTextBox refId="Limits_MaxOutputTokens" defaultValue="16000">Maximum output tokens:</decimalTextBox>
+        <decimalTextBox refId="Limits_MaxToolIterations" defaultValue="200">Maximum tool iterations:</decimalTextBox>
+        <decimalTextBox refId="Limits_ConnectionTimeout" defaultValue="30">Connection timeout (seconds):</decimalTextBox>
+        <decimalTextBox refId="Limits_ReadTimeout" defaultValue="300">Read timeout (seconds):</decimalTextBox>
+      </presentation>
+
+      <presentation id="AdditionalSettings">
+        <listBox refId="AdditionalSettings_List">Settings (name = config key, value = its value):</listBox>
+      </presentation>
+    </presentationTable>
+  </resources>
+</policyDefinitionResources>
