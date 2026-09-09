@@ -264,6 +264,17 @@ int main() {
         CHECK_EQ(read_raw(file), "keep\n"); // unchanged
     }
 
+    // --- write: a file that isn't there points at create --------------------
+    {
+        fs::remove(test_path("not-yet.txt"), ec);
+        std::string r = edit(ctx, json{{"command", "write"},
+                                       {"path", test_path("not-yet.txt")},
+                                       {"file_text", "new\n"}});
+        CHECK_TRUE(r.rfind("ERROR: Not found", 0) == 0);
+        CHECK_TRUE(r.find("create") != std::string::npos);
+        CHECK_TRUE(!fs::exists(test_path("not-yet.txt")));
+    }
+
     // --- write: .git is still out of bounds ---------------------------------
     {
         fs::create_directories(test_path(".git"), ec);
@@ -321,6 +332,8 @@ int main() {
         std::string r = edit(ctx, json{{"command", "delete"}, {"path", test_path(".git/hooks/pre-commit")}});
         CHECK_TRUE(r.rfind("ERROR:", 0) == 0 && r.find(".git") != std::string::npos);
         CHECK_TRUE(fs::exists(test_path(".git/hooks/pre-commit"))); // still there
+        // The create guard further down asserts this file is absent.
+        fs::remove_all(test_path(".git"), ec);
     }
 
     // --- insert keeps the file's endings -----------------------------------

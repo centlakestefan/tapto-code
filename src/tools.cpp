@@ -422,17 +422,31 @@ std::string execute_text_editor(Context& /*context*/, const json& in) {
             if (!in.contains("path")) return "ERROR: 'path' not present.";
             if (!in.contains("file_text"))
                 return "ERROR: 'file_text' required for the write command.";
+            const std::string input = in["path"].get<std::string>();
             fs::path path;
             {
                 std::string sandbox_err;
-                if (!resolve_for_write(in["path"].get<std::string>(), path, sandbox_err)) {
+                if (!resolve_for_write(input, path, sandbox_err)) {
                     return sandbox_err;
                 }
+            }
+            // The mirror of create's "already exists": write is for a file
+            // that is there. Letting it create one would turn a mistyped path
+            // into a quiet new file beside the one the model meant to rewrite.
+            std::error_code ec;
+            if (!fs::exists(path, ec)) {
+                return "ERROR: Not found: " + path.string() +
+                       ". write replaces an existing file; use 'create' for a new one.";
+            }
+            if (fs::is_directory(path, ec)) {
+                return "ERROR: '" + path.string() + "' is a directory.";
             }
             if (!write_file(path, in["file_text"].get<std::string>())) {
                 return "ERROR: Failed to write " + path.string();
             }
-            return "OK: wrote " + path.string();
+            // Echo the path as the model gave it, as the other commands' errors
+            // do not: the resolved one is absolute and machine-specific.
+            return "OK: wrote " + input;
         }
 
         if (command == "delete") {
@@ -442,10 +456,11 @@ std::string execute_text_editor(Context& /*context*/, const json& in) {
             // Directories are refused: there is no recursive delete, so a
             // mis-targeted path can never take a tree (or a repo) with it.
             if (!in.contains("path")) return "ERROR: 'path' not present.";
+            const std::string input = in["path"].get<std::string>();
             fs::path path;
             {
                 std::string sandbox_err;
-                if (!resolve_for_write(in["path"].get<std::string>(), path, sandbox_err)) {
+                if (!resolve_for_write(input, path, sandbox_err)) {
                     return sandbox_err;
                 }
             }
@@ -459,7 +474,7 @@ std::string execute_text_editor(Context& /*context*/, const json& in) {
             if (!fs::remove(path, ec))
                 return "ERROR: Failed to delete " + path.string() +
                        (ec ? (": " + ec.message()) : std::string());
-            return "OK: deleted " + path.string();
+            return "OK: deleted " + input;
         }
 
         if (command == "str_replace") {
