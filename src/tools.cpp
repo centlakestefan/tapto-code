@@ -309,6 +309,17 @@ std::string execute_text_editor(Context& /*context*/, const json& in) {
         if (!in.contains("command")) return "ERROR: 'command' not present.";
         std::string command = in["command"];
 
+        // file_text is the content field for create/write only. Models routinely
+        // paste it into str_replace or insert, where it is otherwise silently
+        // ignored (str_replace defaulted new_str to "" and so would delete
+        // old_str instead of writing the intended text). Fail loudly, naming the
+        // field to use, so the model self-corrects on the first retry.
+        if (in.contains("file_text") && command != "create" && command != "write") {
+            return "ERROR: 'file_text' is only for the 'create' and 'write' commands. "
+                   "For str_replace, pass the replacement text as 'new_str'; for "
+                   "insert, pass it as 'new_str' with 'insert_line'.";
+        }
+
         if (command == "view") {
             if (!in.contains("path")) return "ERROR: 'path' not present.";
             fs::path path;
@@ -395,7 +406,8 @@ std::string execute_text_editor(Context& /*context*/, const json& in) {
             std::error_code ec;
             if (fs::exists(path, ec)) {
                 return "ERROR: File already exists: " + path.string() +
-                       ". Use str_replace to modify it.";
+                       ". Use str_replace to edit part of it, or the 'write' command "
+                       "to replace the whole file.";
             }
             if (!write_file(path, in["file_text"].get<std::string>())) {
                 return "ERROR: Failed to write " + path.string();
@@ -403,10 +415,65 @@ std::string execute_text_editor(Context& /*context*/, const json& in) {
             return "OK";
         }
 
+        if (command == "write") {
+            // Full overwrite, for the "rewrite this whole file" intent that
+            // str_replace (needs a unique old_str) and create (refuses existing
+            // files) can't express. file_text is the entire new content.
+            if (!in.contains("path")) return "ERROR: 'path' not present.";
+            if (!in.contains("file_text"))
+                return "ERROR: 'file_text' required for the write command.";
+            fs::path path;
+            {
+                std::string sandbox_err;
+                if (!resolve_for_write(in["path"].get<std::string>(), path, sandbox_err)) {
+                    return sandbox_err;
+                }
+            }
+            if (!write_file(path, in["file_text"].get<std::string>())) {
+                return "ERROR: Failed to write " + path.string();
+            }
+            return "OK: wrote " + path.string();
+        }
+
+        if (command == "delete") {
+            // Remove a single file. The sandbox, the .git guard, and
+            // read-only-grant refusal all come from resolve_for_write, so a
+            // delete is exactly as reachable (and as protected) as a write.
+            // Directories are refused: there is no recursive delete, so a
+            // mis-targeted path can never take a tree (or a repo) with it.
+            if (!in.contains("path")) return "ERROR: 'path' not present.";
+            fs::path path;
+            {
+                std::string sandbox_err;
+                if (!resolve_for_write(in["path"].get<std::string>(), path, sandbox_err)) {
+                    return sandbox_err;
+                }
+            }
+            std::error_code ec;
+            if (!fs::exists(path, ec))
+                return "ERROR: Not found: " + path.string() + " (nothing to delete).";
+            if (fs::is_directory(path, ec))
+                return "ERROR: '" + path.string() + "' is a directory. "
+                       "delete removes a single file only; there is no recursive delete. "
+                       "Delete the files inside it one at a time instead.";
+            if (!fs::remove(path, ec))
+                return "ERROR: Failed to delete " + path.string() +
+                       (ec ? (": " + ec.message()) : std::string());
+            return "OK: deleted " + path.string();
+        }
+
         if (command == "str_replace") {
             if (!in.contains("path")) return "ERROR: 'path' not present.";
             if (!in.contains("old_str")) {
                 return "ERROR: str_replace requires 'old_str'. To delete the matched text, pass new_str=\"\".";
+            }
+            // To delete matched text the model must say so with an explicit
+            // new_str:"" — a missing new_str is how a whole-file write sent as
+            // file_text used to silently become a deletion of old_str.
+            if (!in.contains("new_str")) {
+                return "ERROR: str_replace requires 'new_str' (the replacement text). "
+                       "Pass new_str=\"\" to delete the matched text. If you meant to "
+                       "write a whole file, use the 'write' command with 'file_text'.";
             }
             fs::path path;
             {
@@ -1303,6 +1370,8 @@ std::string execute_run_command(Context& /*context*/, const json& in) {
 //   view (file, range)        -> "View src/foo.cpp:10-50"
 //   view (file)               -> "View src/foo.cpp"
 //   create                    -> "Create src/foo.cpp"
+//   write                     -> "Write src/foo.cpp"
+//   delete                    -> "Delete src/foo.cpp"
 //   str_replace               -> "Edit src/foo.cpp"
 //   insert                    -> "Insert src/foo.cpp"
 //   unknown sub-command       -> the path
@@ -1350,6 +1419,8 @@ std::string display_text_editor(const json& input) {
         return label;
     }
     if (cmd == "create")      return "Create " + path;
+    if (cmd == "write")       return "Write "  + path;
+    if (cmd == "delete")      return "Delete " + path;
     if (cmd == "str_replace") return "Edit "   + path;
     if (cmd == "insert")      return "Insert " + path;
     // Unknown sub-command: fall back to path only.
@@ -1409,21 +1480,29 @@ std::vector<ToolSpec> builtin_tools() {
         "View, create, and edit files on the local filesystem. Commands:\n"
         "- view: show a file (with line numbers) or list a directory. Optional view_range [start,end].\n"
         "- create: create a new file with file_text (fails if it already exists).\n"
+        "- write: overwrite an entire existing file with file_text (use for full rewrites).\n"
+        "- delete: remove a single file (directories are not deleted).\n"
         "- str_replace: replace the unique occurrence of old_str with new_str.\n"
-        "- insert: insert new_str after line insert_line (0 = beginning).";
+        "- insert: insert new_str after line insert_line (0 = beginning).\n"
+        "file_text is the content field for create and write only; str_replace and "
+        "insert take their text in new_str.";
     editor.claude_builtin_type = "text_editor_20250728";
     editor.parameters = {
         {"type", "object"},
         {"properties", {
             {"command", {
                 {"type", "string"},
-                {"enum", {"view", "create", "str_replace", "insert"}},
+                {"enum", {"view", "create", "write", "delete", "str_replace", "insert"}},
                 {"description", "The edit command to run."}
             }},
             {"path", {{"type", "string"}, {"description", "File or directory path."}}},
-            {"file_text", {{"type", "string"}, {"description", "Content for the create command."}}},
+            {"file_text", {{"type", "string"},
+                           {"description", "Full content for the create and write commands. "
+                                           "NOT used by str_replace or insert."}}},
             {"old_str", {{"type", "string"}, {"description", "Text to replace (str_replace); must be unique."}}},
-            {"new_str", {{"type", "string"}, {"description", "Replacement text (str_replace) or inserted text (insert)."}}},
+            {"new_str", {{"type", "string"},
+                         {"description", "Replacement text (str_replace) or inserted text (insert). "
+                                          "Required for both; pass an empty string to delete in str_replace."}}},
             {"insert_line", {{"type", "integer"}, {"description", "Line number to insert after (insert)."}}},
             {"view_range", {
                 {"type", "array"},

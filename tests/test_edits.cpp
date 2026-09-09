@@ -195,6 +195,134 @@ int main() {
         CHECK_EQ(read_raw(file), "alpha\r\nbeta\r\n"); // unchanged
     }
 
+    // --- str_replace: a whole-file write mis-pasted as file_text is refused ---
+    // This is the failure behind the real incident: the model sent the new file
+    // content in file_text (a create/write field), and str_replace used to read
+    // new_str as absent -> "" and so *delete* old_str instead of writing. Now it
+    // names the field instead of silently corrupting the file.
+    {
+        write_raw(file, "alpha\r\nbeta\r\ngamma\r\n");
+        std::string r = edit(ctx, json{{"command", "str_replace"},
+                                       {"path", file},
+                                       {"old_str", "beta"},
+                                       {"file_text", "REWRITE\n"}});
+        CHECK_TRUE(r.rfind("ERROR:", 0) == 0);
+        CHECK_TRUE(r.find("file_text") != std::string::npos);
+        CHECK_TRUE(r.find("new_str") != std::string::npos);
+        CHECK_EQ(read_raw(file), "alpha\r\nbeta\r\ngamma\r\n"); // unchanged
+    }
+
+    // --- str_replace: missing new_str (no file_text) is also refused --------
+    {
+        write_raw(file, "alpha\r\nbeta\r\n");
+        std::string r = edit(ctx, json{{"command", "str_replace"},
+                                       {"path", file},
+                                       {"old_str", "beta"}});
+        CHECK_TRUE(r.rfind("ERROR: str_replace requires 'new_str'", 0) == 0);
+        CHECK_EQ(read_raw(file), "alpha\r\nbeta\r\n"); // unchanged
+    }
+
+    // --- insert: file_text is refused the same way --------------------------
+    // The incident's first failure was an insert that carried the content in
+    // file_text; before the guard it failed only with "insert_line and new_str
+    // required", which didn't explain why.
+    {
+        write_raw(file, "alpha\r\nbeta\r\n");
+        std::string r = edit(ctx, json{{"command", "insert"},
+                                       {"path", file},
+                                       {"insert_line", 0},
+                                       {"file_text", "FIRST\n"}});
+        CHECK_TRUE(r.rfind("ERROR:", 0) == 0);
+        CHECK_TRUE(r.find("file_text") != std::string::npos);
+        CHECK_TRUE(r.find("new_str") != std::string::npos);
+        CHECK_EQ(read_raw(file), "alpha\r\nbeta\r\n"); // unchanged
+    }
+
+    // --- write: overwrites the whole file -----------------------------------
+    {
+        write_raw(file, "old line 1\nold line 2\nold line 3\n");
+        std::string r = edit(ctx, json{{"command", "write"},
+                                       {"path", file},
+                                       {"file_text", "fresh\n"}});
+        CHECK_EQ(r, "OK: wrote " + file);
+        CHECK_EQ(read_raw(file), "fresh\n");
+    }
+
+    // --- write: preserves byte-exact content (CRLF kept as sent) ------------
+    {
+        edit(ctx, json{{"command", "write"},
+                       {"path", file},
+                       {"file_text", "one\r\ntwo\r\n"}});
+        CHECK_EQ(read_raw(file), "one\r\ntwo\r\n");
+    }
+
+    // --- write: missing file_text is an error --------------------------------
+    {
+        write_raw(file, "keep\n");
+        std::string r = edit(ctx, json{{"command", "write"}, {"path", file}});
+        CHECK_TRUE(r.rfind("ERROR: 'file_text' required for the write command", 0) == 0);
+        CHECK_EQ(read_raw(file), "keep\n"); // unchanged
+    }
+
+    // --- write: .git is still out of bounds ---------------------------------
+    {
+        fs::create_directories(test_path(".git"), ec);
+        const std::string cfg = test_path(".git/config");
+        write_raw(cfg, "[core]\n");
+        std::string r = edit(ctx, json{{"command", "write"},
+                                       {"path", cfg},
+                                       {"file_text", "evil\n"}});
+        CHECK_TRUE(r.rfind("ERROR:", 0) == 0 && r.find(".git") != std::string::npos);
+        CHECK_EQ(read_raw(cfg), "[core]\n"); // unchanged
+    }
+
+    // --- create: an existing file points at write ---------------------------
+    {
+        write_raw(file, "exists\n");
+        std::string r = edit(ctx, json{{"command", "create"},
+                                       {"path", file},
+                                       {"file_text", "again\n"}});
+        CHECK_TRUE(r.rfind("ERROR: File already exists", 0) == 0);
+        CHECK_TRUE(r.find("write") != std::string::npos);
+        CHECK_EQ(read_raw(file), "exists\n"); // unchanged
+    }
+
+    // --- delete: a file disappears ------------------------------------------
+    {
+        write_raw(file, "gone in a moment\n");
+        std::string r = edit(ctx, json{{"command", "delete"}, {"path", file}});
+        CHECK_EQ(r, "OK: deleted " + file);
+        CHECK_TRUE(!fs::exists(file));
+    }
+
+    // --- delete: a directory is refused (no recursive delete) ---------------
+    {
+        fs::create_directories(test_path("dir/sub"), ec);
+        write_raw(test_path("dir/a.txt"), "x\n");
+        write_raw(test_path("dir/sub/b.txt"), "y\n");
+        std::string r = edit(ctx, json{{"command", "delete"}, {"path", test_path("dir")}});
+        CHECK_TRUE(r.rfind("ERROR:", 0) == 0);
+        CHECK_TRUE(r.find("single file") != std::string::npos);
+        CHECK_TRUE(fs::exists(test_path("dir")));            // nothing removed
+        CHECK_TRUE(fs::exists(test_path("dir/sub/b.txt")));
+        fs::remove_all(test_path("dir"), ec);
+    }
+
+    // --- delete: a path that isn't there is an error ------------------------
+    {
+        std::string r = edit(ctx, json{{"command", "delete"}, {"path", test_path("no-such-file.txt")}});
+        CHECK_TRUE(r.rfind("ERROR: Not found", 0) == 0);
+    }
+
+    // --- delete: .git is out of bounds, like write --------------------------
+    {
+        fs::create_directories(test_path(".git/hooks"), ec);
+        write_raw(test_path(".git/hooks/pre-commit"), "#!/bin/sh\n");
+        std::string r = edit(ctx, json{{"command", "delete"}, {"path", test_path(".git/hooks/pre-commit")}});
+        CHECK_TRUE(r.rfind("ERROR:", 0) == 0 && r.find(".git") != std::string::npos);
+        CHECK_TRUE(fs::exists(test_path(".git/hooks/pre-commit"))); // still there
+    }
+
     // --- insert keeps the file's endings -----------------------------------
     {
         write_raw(file, "alpha\r\nbeta\r\ngamma\r\n");
@@ -485,6 +613,12 @@ int main() {
         CHECK_EQ(label("str_replace_based_edit_tool",
                        json{{"command", "create"}, {"path", "a.txt"}}),
                  "Create a.txt");
+        CHECK_EQ(label("str_replace_based_edit_tool",
+                       json{{"command", "write"}, {"path", "a.txt"}}),
+                 "Write a.txt");
+        CHECK_EQ(label("str_replace_based_edit_tool",
+                       json{{"command", "delete"}, {"path", "a.txt"}}),
+                 "Delete a.txt");
         CHECK_EQ(label("str_replace_based_edit_tool",
                        json{{"command", "str_replace"}, {"path", "a.txt"}}),
                  "Edit a.txt");
