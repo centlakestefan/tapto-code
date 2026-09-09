@@ -5,6 +5,7 @@
 #include "tapto/commands.h"
 
 #include "tapto/context.h"
+#include "tapto/policy.h"
 
 #include <algorithm>
 #include <cctype>
@@ -1269,10 +1270,13 @@ std::string execute_list_commands(Context& /*context*/, const json& /*in*/) {
 
     auto cmds = merged_commands();
     if (cmds.empty()) {
-        out << "\nNo user commands are configured. The user can add them with: "
-               "tapto-code command add <name> <command...>\n";
+        out << (policy_allows_user_commands()
+                    ? "\nNo user commands are configured. The user can add them with: "
+                      "tapto-code command add <name> <command...>\n"
+                    : "\nNo commands are allow-listed: the organization's policy defines "
+                      "none and allows no user commands.\n");
     } else {
-        out << "\nUser commands:\n";
+        out << "\nAllow-listed commands:\n";
         for (const auto& [name, cmdline] : cmds) {
             out << "- " << name << ": " << cmdline << "\n";
         }

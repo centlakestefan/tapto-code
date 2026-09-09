@@ -10,6 +10,7 @@
       <string id="Centlake">Centlake</string>
       <string id="Tapto">tapto</string>
       <string id="Provider">AI provider</string>
+      <string id="Commands">Commands</string>
 
       <string id="Dialect_Claude">Claude (Anthropic API)</string>
       <string id="Dialect_OpenAI">OpenAI (and OpenAI-compatible servers)</string>
@@ -31,7 +32,7 @@ Writes the config key "provider".</string>
 
 API shape: Claude, OpenAI or Gemini. OpenAI is also the shape most local and gateway servers speak (vLLM, llama.cpp, LiteLLM, Azure OpenAI).
 
-Endpoint URL: leave empty for the vendor's public API. For a gateway or an on-premises server, its base URL, for example https://ai-gateway.example.com/v1.
+Endpoint URL: required, so that a block this policy defines always says where it sends data. For a gateway or an on-premises server, its base URL, for example https://ai-gateway.example.com/v1. For the vendor's public API: https://api.anthropic.com, https://api.openai.com or https://generativelanguage.googleapis.com.
 
 Model: the model name the endpoint expects. Empty uses the program's default for the API shape.
 
@@ -50,7 +51,7 @@ Writes the config keys work-provider-type, work-provider-url, work-model, work-a
       <string id="AllowedProviders">Allowed providers</string>
       <string id="AllowedProviders_Explain">The only provider names the programs will use, whether picked with --provider or configured as the default. One name per line, for example "work" or "review".
 
-Enabled: any other provider is refused with a message naming the allowed ones. This takes precedence over "Allow user-defined providers".
+Enabled: any other provider is refused with a message naming the allowed ones. This takes precedence over "Allow user-defined providers". The endpoint of an allowed provider can then be set only by policy: a "-provider-url" the user wrote is refused, so a permitted block cannot be pointed at a personal account.
 
 Not configured: no restriction.
 
@@ -59,7 +60,7 @@ Writes the config key "allowed-providers".</string>
       <string id="AllowUserProviders">Allow user-defined providers</string>
       <string id="AllowUserProviders_Explain">Whether users may use provider blocks they configured themselves, or the vendors' public APIs with their own keys.
 
-Disabled: only providers this policy defines are usable: the "Default provider", the "Work provider", and any block whose "-provider-type" is set under "Additional settings". Anything else is refused. Use this to keep company data from being sent to a personal account.
+Disabled: only providers this policy defines are usable: the "Default provider", the "Work provider", and any block whose "-provider-type" is set under "Additional settings". Anything else is refused, and so is a "-provider-url" the user wrote for one of these blocks: their endpoints can be set only by policy. Use this to keep company data from being sent to a personal account, and set each block's endpoint URL so the policy says where the data goes.
 
 Enabled or Not configured: users may configure and use providers of their own.
 
@@ -80,6 +81,26 @@ Each value filled in is locked for the user.
 
 Writes the config keys max-output-tokens, max-tool-iterations, connection-timeout and read-timeout.</string>
 
+      <string id="AllowListedCommands">Allow-listed commands</string>
+      <string id="AllowListedCommands_Explain">Commands the AI agent may run, for every user: a name and the command line it stands for, for example "build" and "cmake --build build --config Debug". The agent can only pick a name; it never supplies shell text of its own.
+
+The command line may carry placeholders the agent fills in: %1, %2, ... and %* for values, %p1 for a path confined to the project tree. Run "tapto-code --help" and see the README's Commands section for the rules.
+
+Enabled: these commands are available in every project and are listed with the scope "policy". A name set here cannot be redefined by the user; other names may still be added by the user unless "Allow user-defined commands" is disabled.
+
+Not configured: no commands are provided by policy.
+
+Writes the values under the "commands" subkey.</string>
+
+      <string id="AllowUserCommands">Allow user-defined commands</string>
+      <string id="AllowUserCommands_Explain">Whether users may allow-list commands of their own with "tapto-code command add" or /add-command.
+
+Disabled: only the commands set under "Allow-listed commands" (and the read-only built-ins: wc, head, tail, cat, ls, tree) can be run. Commands in the user's own stores are ignored and "command add" is refused.
+
+Enabled or Not configured: users may allow-list commands of their own.
+
+Writes the config key "allow-user-commands".</string>
+
       <string id="AdditionalSettings">Additional settings</string>
       <string id="AdditionalSettings_Explain">Any other configuration key the programs read, as name and value pairs, for keys this template has no dedicated setting for: trace-file, system-prompt, print-cot, or a second provider block (review-provider-type, review-provider-url, review-model, review-api-key).
 
@@ -97,7 +118,7 @@ Never put an API key value here; see "Work provider" for the references to use i
 
       <presentation id="WorkProvider">
         <dropdownList refId="WorkProvider_Type" defaultItem="1">API shape:</dropdownList>
-        <textBox refId="WorkProvider_Url"><label>Endpoint URL:</label></textBox>
+        <textBox refId="WorkProvider_Url"><label>Endpoint URL (required; the vendor's public API or your gateway):</label></textBox>
         <textBox refId="WorkProvider_Model"><label>Model:</label></textBox>
         <textBox refId="WorkProvider_ApiKey"><label>API key reference (wincred:, env:, cmd:), never the key:</label></textBox>
         <textBox refId="WorkProvider_ReasoningEffort"><label>Reasoning effort (OpenAI shape only):</label></textBox>
@@ -112,6 +133,10 @@ Never put an API key value here; see "Work provider" for the references to use i
         <decimalTextBox refId="Limits_MaxToolIterations" defaultValue="200">Maximum tool iterations:</decimalTextBox>
         <decimalTextBox refId="Limits_ConnectionTimeout" defaultValue="30">Connection timeout (seconds):</decimalTextBox>
         <decimalTextBox refId="Limits_ReadTimeout" defaultValue="300">Read timeout (seconds):</decimalTextBox>
+      </presentation>
+
+      <presentation id="AllowListedCommands">
+        <listBox refId="AllowListedCommands_List">Commands (name = the command's name, value = its command line):</listBox>
       </presentation>
 
       <presentation id="AdditionalSettings">

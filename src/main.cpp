@@ -64,7 +64,7 @@ const char* kUsage =
     "Usage:\n"
     "  tapto-code [--provider <name>]                Start an interactive chat (default)\n"
     "  tapto-code [--system|--global|--local|--policy] config <command> [args]\n"
-    "  tapto-code [--system|--global|--local] command <add|remove|list> ...\n"
+    "  tapto-code [--system|--global|--local|--policy] command <add|remove|list> ...\n"
     "\n"
     "Config commands:\n"
     "  set <key> <value>   Set a config value (default scope: local)\n"
@@ -125,7 +125,11 @@ const char* kUsage =
     "wins over every user scope and cannot be changed with 'config set'; a key\n"
     "not set there is left to the user. Policy may also confine --provider:\n"
     "  allowed-providers = work, review    only these names\n"
-    "  allow-user-providers = 0            only providers the policy defines\n";
+    "  allow-user-providers = 0            only providers the policy defines\n"
+    "and allow-list commands of its own (the 'commands' subkey, or\n"
+    "/etc/tapto/policy-commands), listed by 'command list' as policy and\n"
+    "defined above the user's; with\n"
+    "  allow-user-commands = 0             they are the only ones\n";
 
 struct Args {
     std::optional<Level> level;
@@ -375,6 +379,15 @@ int cmd_command(std::optional<Level> level, const std::vector<std::string>& rest
             cmdline += rest[i];
         }
         Level lvl = level.value_or(Level::Local);
+        if (lvl == Level::Policy) {
+            ui::print_error("the policy scope is read-only; it is set by your organization in " +
+                            policy_source());
+            return 2;
+        }
+        if (std::string why = command_policy_refusal(name); !why.empty()) {
+            ui::print_error(why);
+            return 2;
+        }
         try {
             add_command(lvl, name, cmdline);
         } catch (const std::exception& e) {
@@ -391,6 +404,11 @@ int cmd_command(std::optional<Level> level, const std::vector<std::string>& rest
             return 2;
         }
         Level lvl = level.value_or(Level::Local);
+        if (lvl == Level::Policy) {
+            ui::print_error("the policy scope is read-only; it is set by your organization in " +
+                            policy_source());
+            return 2;
+        }
         if (!remove_command(lvl, rest[1])) {
             ui::print_error("command not found in " + std::string(level_name(lvl)) +
                             " scope: " + rest[1]);
@@ -1276,6 +1294,10 @@ int cmd_chat(const std::string& requested_provider) {
                 ui::print_line("error: '" + name + "' is a reserved built-in command");
                 continue;
             }
+            if (std::string why = command_policy_refusal(name); !why.empty()) {
+                ui::print_line("error: " + why);
+                continue;
+            }
             std::string cmdline = remainder.substr(begin);
             try {
                 add_command(Level::Local, name, cmdline);
@@ -1337,7 +1359,8 @@ int main(int argc, char** argv) {
             if (raw[i] == "--system") level = Level::System;
             else if (raw[i] == "--global") level = Level::Global;
             else if (raw[i] == "--local") level = Level::Local;
-            else break; // --policy has no commands store; it falls through to the error below
+            else if (raw[i] == "--policy") level = Level::Policy; // list only; add/remove refuse it
+            else break;
         }
         if (i < raw.size() && raw[i] == "command") {
             std::vector<std::string> sub(raw.begin() + i + 1, raw.end());

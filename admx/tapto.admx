@@ -11,6 +11,11 @@
   programs refuse to change it. A setting left "Not Configured" leaves that
   key to the user. See libtapto/include/tapto/policy.h.
 
+  The two list settings write into subkeys of their own, "settings" (free-form
+  config keys, read as if they sat in the parent) and "commands" (the command
+  allow-list). A list element clears its key before rewriting the list, so a
+  list sharing the parent key would take every other setting with it.
+
   Install: copy tapto.admx to %SystemRoot%\PolicyDefinitions (or the domain's
   Central Store, \\<domain>\SYSVOL\<domain>\Policies\PolicyDefinitions) and
   en-US\tapto.adml into the en-US folder next to it. The settings then appear
@@ -32,6 +37,9 @@
       <parentCategory ref="Centlake" />
     </category>
     <category name="Provider" displayName="$(string.Provider)">
+      <parentCategory ref="Tapto" />
+    </category>
+    <category name="Commands" displayName="$(string.Commands)">
       <parentCategory ref="Tapto" />
     </category>
   </categories>
@@ -62,7 +70,7 @@
           <item displayName="$(string.Dialect_OpenAI)"><value><string>openai</string></value></item>
           <item displayName="$(string.Dialect_Gemini)"><value><string>gemini</string></value></item>
         </enum>
-        <text id="WorkProvider_Url" valueName="work-provider-url" />
+        <text id="WorkProvider_Url" valueName="work-provider-url" required="true" />
         <text id="WorkProvider_Model" valueName="work-model" />
         <text id="WorkProvider_ApiKey" valueName="work-api-key" />
         <text id="WorkProvider_ReasoningEffort" valueName="work-reasoning-effort" />
@@ -104,15 +112,40 @@
       </elements>
     </policy>
 
+    <!-- The organization's allow-listed commands: name = command line, in the
+         "commands" subkey. They sit above the user's own command stores, so a
+         name set here cannot be redefined by the user. -->
+    <policy name="AllowListedCommands" class="Both" displayName="$(string.AllowListedCommands)"
+            explainText="$(string.AllowListedCommands_Explain)" presentation="$(presentation.AllowListedCommands)"
+            key="SOFTWARE\Policies\Centlake\tapto">
+      <parentCategory ref="Commands" />
+      <supportedOn ref="windows:SUPPORTED_Windows7" />
+      <elements>
+        <list id="AllowListedCommands_List" key="SOFTWARE\Policies\Centlake\tapto\commands" explicitValue="true" />
+      </elements>
+    </policy>
+
+    <!-- allow-user-commands = 1 | 0 -->
+    <policy name="AllowUserCommands" class="Both" displayName="$(string.AllowUserCommands)"
+            explainText="$(string.AllowUserCommands_Explain)"
+            key="SOFTWARE\Policies\Centlake\tapto" valueName="allow-user-commands">
+      <parentCategory ref="Commands" />
+      <supportedOn ref="windows:SUPPORTED_Windows7" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+
     <!-- Any other key = value the programs read: trace-file, system-prompt,
-         a second provider block (review-provider-type, review-model, ...). -->
+         a second provider block (review-provider-type, review-model, ...).
+         Written to the "settings" subkey, which the programs read as part of
+         the parent key; see the note at the top. -->
     <policy name="AdditionalSettings" class="Both" displayName="$(string.AdditionalSettings)"
             explainText="$(string.AdditionalSettings_Explain)" presentation="$(presentation.AdditionalSettings)"
             key="SOFTWARE\Policies\Centlake\tapto">
       <parentCategory ref="Tapto" />
       <supportedOn ref="windows:SUPPORTED_Windows7" />
       <elements>
-        <list id="AdditionalSettings_List" key="SOFTWARE\Policies\Centlake\tapto" explicitValue="true" />
+        <list id="AdditionalSettings_List" key="SOFTWARE\Policies\Centlake\tapto\settings" explicitValue="true" />
       </elements>
     </policy>
 

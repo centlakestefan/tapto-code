@@ -39,6 +39,14 @@ carries everything else.
   `/etc/tapto/policy` elsewhere. A key set there wins over every user scope and
   `config set` refuses it; `--policy config list` shows it. Two policy-only
   keys confine `--provider`: `allowed-providers` and `allow-user-providers`.
+- Policy can allow-list commands for every user: the `commands` subkey on
+  Windows (the template's *Allow-listed commands* setting), the file
+  `/etc/tapto/policy-commands` elsewhere. They merge above the user's own
+  commands, `command list` shows them as `policy`, and a third policy-only key,
+  `allow-user-commands = 0`, makes them the only ones the agent can run.
+- With either provider restriction set, a `-provider-url` from a user scope is
+  refused, so a permitted block cannot be pointed at a personal endpoint. The
+  template's work block requires its URL.
 
 ## [0.3.0] — 2026-09-07
 

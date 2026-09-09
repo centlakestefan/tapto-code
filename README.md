@@ -131,7 +131,10 @@ Where policy is read from:
 
 Value names are the config keys, verbatim. Strings are taken as they are, a
 DWORD becomes its decimal text (so a boolean is `1`/`0`), and a multi-string or
-an ADMX list subkey becomes one comma-separated value. Windows lets only
+an ADMX list subkey becomes one comma-separated value. Two subkeys are special:
+`settings` holds free-form keys read as if they sat in the parent (it is where
+the template's *Additional settings* list writes), and `commands` is the
+organization's command allow-list, described below. Windows lets only
 administrators write under `SOFTWARE\Policies` and Group Policy re-applies it
 on every refresh, which is why the registry is used rather than a file under
 `ProgramData`; the `--system` file remains the place for defaults users may
@@ -141,15 +144,31 @@ override.
 Copy them into `%SystemRoot%\PolicyDefinitions` (or the domain's Central
 Store) and the settings appear under *Administrative Templates > Centlake >
 tapto*; Intune takes the same files through ADMX ingestion. The template covers
-the default provider, a `work` provider block, request limits, the two
-restrictions below, and a free-form name/value list for every other key.
+the default provider, a `work` provider block, request limits, the
+restrictions below, the command allow-list, and a free-form name/value list for
+every other key.
 
-Two keys exist only as policy:
+Three keys exist only as policy:
 
 ```
 allowed-providers = work, review    # the only names --provider or `provider =` may use
 allow-user-providers = 0            # only blocks the policy itself defines are usable
+allow-user-commands = 0             # only commands the policy defines may be run or added
 ```
+
+Confinement holds only when the policy also fixes where a permitted block
+points. With either provider restriction set, a `-provider-url` from a user
+scope is refused: the endpoint of a permitted provider is the policy's, or the
+vendor's default. The template makes the work block's URL a required field for
+the same reason; a policy written by hand should set it too.
+
+A policy can also allow-list commands for everyone: on Windows the values of
+the `commands` subkey (the template's *Allow-listed commands* setting), name =
+command line; elsewhere the file `/etc/tapto/policy-commands`, in the same
+format as a commands store. They merge above the user's own commands, so a name
+the policy defines cannot be redefined, and `command list` shows them with the
+scope `policy`. With `allow-user-commands = 0` they are the only commands the
+agent can run, apart from the built-ins.
 
 **Never put an API key in a policy**: Group Policy objects are readable by
 every account in the domain. Set `work-api-key` to a reference instead
@@ -160,6 +179,7 @@ authenticates the user.
 ```sh
 tapto-code --policy config list      # what the policy sets, and nothing else
 tapto-code config list --show-origin # policy entries are marked "policy"
+tapto-code --policy command list     # the commands the policy allow-lists
 ```
 
 ## Chat
@@ -390,7 +410,8 @@ can't be redefined with `command add`.
 can only run commands you have explicitly allow-listed. Commands are stored per scope (system / global /
 local, same precedence as config); local commands live in the central
 per-folder store (not in the repo), so a cloned project can't ship runnable
-commands. Managed with:
+commands. An organization can add commands above all three, and confine the
+agent to them, through [policy](#enterprise-policy). Managed with:
 
 ```sh
 tapto-code command add build-debug cmake --build build --config Debug
