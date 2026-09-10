@@ -784,11 +784,27 @@ bool build_argv(const std::string& tpl, const std::vector<std::string>& args,
                 std::vector<std::string>& argv, std::string& error) {
     // Highest positional index used; %* expands to the args beyond it.
     int max_idx = 0;
+    bool has_star = false;
     for (size_t i = 0; i < tpl.size(); ++i) {
         if (tpl[i] != '%') continue;
         bool p, star;
         int idx;
-        if (parse_placeholder(tpl, i, p, star, idx) > 0 && !star) max_idx = std::max(max_idx, idx);
+        if (parse_placeholder(tpl, i, p, star, idx) > 0) {
+            if (!star) max_idx = std::max(max_idx, idx);
+            else has_star = true;
+        }
+    }
+
+    // A template with no %* / %p* has a fixed number of slots; more supplied
+    // values than slots is a model error (e.g. git-commit given ["-m","text"]
+    // would stuff "-m" into %1 and silently drop "text"), so refuse it rather
+    // than silently consume the wrong values.
+    if (!has_star && static_cast<int>(args.size()) > max_idx) {
+        error = "ERROR: command takes " + std::to_string(max_idx) +
+                " argument" + (max_idx == 1 ? "" : "s") +
+                " but " + std::to_string(args.size()) + " were provided. "
+                "Extra values would be silently ignored, so the call was rejected.";
+        return false;
     }
 
     auto subst_path = [&](const std::string& value, std::string& out) -> bool {
@@ -1352,7 +1368,16 @@ std::string execute_run_command(Context& /*context*/, const json& in) {
             display = join_argv(argv);
             output = exec_capture(argv, base, exit_code);
         } else {
-            // No placeholders: run through the shell (allows pipes/redirection).
+            // No placeholders: the command takes no arguments, so any supplied
+            // ones are a model error — reject rather than silently drop them
+            // (build_argv's arity check can't catch this path, as it runs
+            // parameterized templates only).
+            if (!args.empty()) {
+                return "ERROR: command takes no arguments but " +
+                       std::to_string(args.size()) + " were provided. "
+                       "Extra values would be silently ignored, so the call was rejected.";
+            }
+            // Run through the shell (allows pipes/redirection).
             display = tpl;
             output = run_shell(tpl, base, exit_code);
         }
