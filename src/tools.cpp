@@ -310,15 +310,21 @@ std::string execute_text_editor(Context& /*context*/, const json& in) {
         if (!in.contains("command")) return "ERROR: 'command' not present.";
         std::string command = in["command"];
 
-        // file_text is the content field for create/write only. Models routinely
-        // paste it into str_replace or insert, where it is otherwise silently
-        // ignored (str_replace defaulted new_str to "" and so would delete
-        // old_str instead of writing the intended text). Fail loudly, naming the
+        // file_text is the content field for create/write only. The two genuinely
+        // misleading cases are str_replace and insert, where a stray file_text
+        // would otherwise be silently ignored (str_replace would delete old_str
+        // instead of writing the intended text). Fail loudly there, naming the
         // field to use, so the model self-corrects on the first retry.
-        if (in.contains("file_text") && command != "create" && command != "write") {
+        //
+        // view and delete simply ignore file_text: it is irrelevant to them, and
+        // rejecting it only trips the model up — it habitually emits
+        // file_text: "" on view calls, sees the error, doesn't realise it's the
+        // field it's adding, and loops (see tapto.log, the config.c session).
+        if (in.contains("file_text") &&
+            (command == "str_replace" || command == "insert")) {
             return "ERROR: 'file_text' is only for the 'create' and 'write' commands. "
-                   "For str_replace, pass the replacement text as 'new_str'; for "
-                   "insert, pass it as 'new_str' with 'insert_line'.";
+                   "For str_replace or insert, pass the text as 'new_str' "
+                   "(insert also takes 'insert_line').";
         }
 
         if (command == "view") {
@@ -581,6 +587,8 @@ std::string execute_text_editor(Context& /*context*/, const json& in) {
 }
 
 // --- file search tool -----------------------------------------------------
+// Content search goes through find_matching_lines (tapto/fstools.h), which
+// streams the file so it can reach files far larger than the context window.
 
 std::string execute_find_files(Context& /*context*/, const json& in) {
     try {
@@ -603,7 +611,6 @@ std::string execute_find_files(Context& /*context*/, const json& in) {
         if (!fs::exists(base, ec)) return "ERROR: Path not found: " + start;
 
         constexpr size_t kMaxFiles = 100;
-        constexpr size_t kMaxFileBytes = 5 * 1024 * 1024;
         constexpr size_t kMaxLinesPerFile = 20;
 
         struct Match {
@@ -641,24 +648,14 @@ std::string execute_find_files(Context& /*context*/, const json& in) {
             if (m.path.empty()) m.path = p.generic_string();
 
             if (has_query) {
-                std::error_code sz_ec;
-                auto size = fs::file_size(p, sz_ec);
-                if (sz_ec || size > kMaxFileBytes) continue;
-                std::string content;
-                if (!read_file(p, content)) continue;
-                if (content.find('\0') != std::string::npos) continue; // skip binary
-
-                auto lines = split_lines(content);
-                bool matched = false;
-                for (size_t i = 0; i < lines.size(); ++i) {
-                    if (lines[i].find(query) != std::string::npos) {
-                        matched = true;
-                        if (m.lines.size() < kMaxLinesPerFile) {
-                            m.lines.emplace_back(static_cast<int>(i + 1), lines[i]);
-                        }
-                    }
-                }
-                if (!matched) continue; // file name matched but content didn't
+                // Stream the file line-by-line (find_matching_lines) rather than
+                // loading it whole: a content search must reach files far larger
+                // than the context window (the old 5 MiB cap made find_files
+                // report "no files" on any big log). The probe inside bails out
+                // on binaries, and we keep at most kMaxLinesPerFile hits per file.
+                auto lines = find_matching_lines(p, query, kMaxLinesPerFile);
+                if (lines.empty()) continue;   // file name matched, content didn't
+                for (const auto& lm : lines) m.lines.emplace_back(lm.line, std::move(lm.text));
             }
 
             results.push_back(std::move(m));

@@ -238,6 +238,35 @@ int main() {
         CHECK_EQ(read_raw(file), "alpha\r\nbeta\r\n"); // unchanged
     }
 
+    // --- view: a stray file_text is ignored, not an error -------------------
+    // The real incident (tapto.log, the config.c session): the model habitually
+    // emits file_text: "" alongside command/path/view_range on a `view`. The
+    // guard that rejects file_text used to fire for every command but
+    // create/write, so each such view bounced back with an ERROR the model
+    // didn't understand ("I only included path and view_range") and it looped.
+    // file_text is irrelevant to view/delete and must simply be ignored.
+    {
+        write_raw(file, "alpha\r\nbeta\r\n");
+        std::string r = edit(ctx, json{{"command", "view"},
+                                       {"path", file},
+                                       {"file_text", ""}});
+        CHECK_TRUE(r.rfind("ERROR:", 0) != 0);           // no error at all
+        CHECK_TRUE(r.find("1|alpha") != std::string::npos); // the view rendered
+    }
+
+    // --- delete: a stray file_text is ignored, not an error -----------------
+    // Same guard, same habit: deleting with a leftover file_text must not trip
+    // the rejection.
+    {
+        const std::string del = test_path("deletable.txt");
+        write_raw(del, "alpha\nbeta\n");
+        std::string r = edit(ctx, json{{"command", "delete"},
+                                       {"path", del},
+                                       {"file_text", ""}});
+        CHECK_TRUE(r.rfind("ERROR:", 0) != 0);           // no error at all
+        CHECK_TRUE(!fs::exists(del, ec));                // actually deleted
+    }
+
     // --- write: overwrites the whole file -----------------------------------
     {
         write_raw(file, "old line 1\nold line 2\nold line 3\n");
@@ -603,6 +632,28 @@ int main() {
         r = edit(ctx, json{{"command", "view"}, {"path", label + "/docs/note.txt"}});
         CHECK_TRUE(r.rfind("ERROR:", 0) == 0);
         fs::remove_all(outside, ec);
+    }
+
+    // --- find_files: a file far larger than the old 5 MiB cap is still ----
+    // --- searched. The fix streams line-by-line, so a needle near the end of
+    // a multi-GB log is reachable (previously big files were skipped and the
+    // search reported "No files").
+    {
+        ToolExecutorFn find = nullptr;
+        for (const auto& t : ctx.tools) if (t.name == "find_files") find = t.executor;
+        CHECK_TRUE(find != nullptr);
+        const std::string bigfile = test_path("big.log");
+        std::string big;
+        big.reserve(6 * 1024 * 1024);
+        for (int i = 0; i < 60000; ++i) big += "filler line " + std::to_string(i) + "\n";
+        big += "big-file-needle at the end\n";
+        write_raw(bigfile, big);
+        const std::string r = find(ctx, json{{"filename", "*.log"},
+                                             {"path", kDir},
+                                             {"search_string", "big-file-needle"}});
+        CHECK_TRUE(r.find(bigfile) != std::string::npos);
+        CHECK_TRUE(r.find("big-file-needle") != std::string::npos);
+        fs::remove(bigfile);
     }
 
     // --- status-line labels -------------------------------------------------
