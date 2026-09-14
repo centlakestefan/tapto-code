@@ -32,6 +32,15 @@ breaking changes and the patch number everything else.)
 
 ## [Unreleased]
 
+## [1.0.1] — 2026-09-14
+
+### Fixed
+
+- The `find_files` big-file test wrote its file into a directory an earlier
+  block had already removed, so it failed on every host, and the file it
+  meant to write was under the 5 MiB cap it exists to disprove. It makes its
+  directory and writes past the cap. Test only; the program is 1.0.0's.
+
 ## [1.0.0] — 2026-09-14
 
 The first stable release. The flags, config keys and tool schema described
@@ -217,7 +226,8 @@ provider's name when `provider` is absent.
 Initial release: an agent that reads, writes and runs code in a sandboxed
 project directory, against Claude, OpenAI or Gemini. ([d9ac02c])
 
-[Unreleased]: https://github.com/centlakestefan/tapto-code/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/centlakestefan/tapto-code/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/centlakestefan/tapto-code/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/centlakestefan/tapto-code/compare/v0.3.0...v1.0.0
 [0.3.0]: https://github.com/centlakestefan/tapto-code/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/centlakestefan/tapto-code/compare/v0.1.0...v0.2.0
