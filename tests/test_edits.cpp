@@ -637,23 +637,28 @@ int main() {
     // --- find_files: a file far larger than the old 5 MiB cap is still ----
     // --- searched. The fix streams line-by-line, so a needle near the end of
     // a multi-GB log is reachable (previously big files were skipped and the
-    // search reported "No files").
+    // search reported "No files"). The test directory was removed above, so
+    // it is made again here; and the file has to be past the cap for the
+    // test to say anything, so it is written past it.
     {
         ToolExecutorFn find = nullptr;
         for (const auto& t : ctx.tools) if (t.name == "find_files") find = t.executor;
         CHECK_TRUE(find != nullptr);
+        fs::create_directories(kDir, ec);
         const std::string bigfile = test_path("big.log");
         std::string big;
-        big.reserve(6 * 1024 * 1024);
-        for (int i = 0; i < 60000; ++i) big += "filler line " + std::to_string(i) + "\n";
+        big.reserve(7 * 1024 * 1024);
+        while (big.size() < 6 * 1024 * 1024)
+            big += "filler line " + std::to_string(big.size()) + "\n";
         big += "big-file-needle at the end\n";
         write_raw(bigfile, big);
+        CHECK_TRUE(fs::file_size(bigfile, ec) > 5 * 1024 * 1024);
         const std::string r = find(ctx, json{{"filename", "*.log"},
                                              {"path", kDir},
                                              {"search_string", "big-file-needle"}});
         CHECK_TRUE(r.find(bigfile) != std::string::npos);
         CHECK_TRUE(r.find("big-file-needle") != std::string::npos);
-        fs::remove(bigfile);
+        fs::remove_all(kDir, ec);
     }
 
     // --- status-line labels -------------------------------------------------
