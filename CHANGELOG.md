@@ -32,6 +32,18 @@ breaking changes and the patch number everything else.)
 
 ## [Unreleased]
 
+## [1.0.2] — 2026-09-16
+
+### Fixed
+
+- A user prompt containing an invalid UTF-8 byte — e.g. a pasted or typed
+  accented character that the console code page delivered mangled — aborted
+  the turn with `json.exception.type_error.316` before the model saw it,
+  because the conversation history is serialized with `nlohmann::json`, which
+  refuses to emit illegal UTF-8. Tool results were already sanitized on entry
+  to the history; user prompts now go through the same normalization at the
+  same point.
+
 ## [1.0.1] — 2026-09-14
 
 ### Fixed
@@ -226,7 +238,8 @@ provider's name when `provider` is absent.
 Initial release: an agent that reads, writes and runs code in a sandboxed
 project directory, against Claude, OpenAI or Gemini. ([d9ac02c])
 
-[Unreleased]: https://github.com/centlakestefan/tapto-code/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/centlakestefan/tapto-code/compare/v1.0.2...HEAD
+[1.0.2]: https://github.com/centlakestefan/tapto-code/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/centlakestefan/tapto-code/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/centlakestefan/tapto-code/compare/v0.3.0...v1.0.0
 [0.3.0]: https://github.com/centlakestefan/tapto-code/compare/v0.2.0...v0.3.0
