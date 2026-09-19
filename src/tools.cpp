@@ -217,7 +217,9 @@ enum class Scope { Read, Write, WorkingDir };
 // path under its root. The label form is taken only when resolving from the
 // working directory itself and it has no entry of that name, so a project's
 // own subfolder always wins over a grant that happens to share its name; the
-// absolute form is always unambiguous.
+// absolute form is always unambiguous. The set's home root is the working
+// directory under its own label, so "<label>/<rest>" as the folder tools
+// print it comes back here and lands where it came from.
 bool resolve_in_sandbox(const std::string& input, fs::path& out, std::string& error,
                         const fs::path& base = fs::path(), Scope scope = Scope::Read) {
     const fs::path& root = sandbox_root();
@@ -270,7 +272,7 @@ bool resolve_in_sandbox(const std::string& input, fs::path& out, std::string& er
     error = "ERROR: '" + input + "' is outside the working directory. "
             "tapto-code can only access the folder it was started in and its "
             "subdirectories" +
-            std::string(grants && !g_folders->empty()
+            std::string(grants && g_folders->has_grants()
                             ? (writes ? ", plus any folder the user has granted read-write."
                                       : ", plus any folder the user has granted.")
                             : ".");

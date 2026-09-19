@@ -208,9 +208,15 @@ library the project depends on, a sibling repository — grant it read-only:
 
 While a folder is granted the model gets four more tools — `list_folders`,
 `list_files`, `read_file` and `search_files` — that list, read and search under
-the granted roots and nothing else; they cannot create or change a file. Files
-are addressed as `<label>/<relative path>`, where the label is the folder's last
-path component (shown on grant and by `/list-folders`).
+the working directory and the granted roots and nothing else; they cannot
+create or change a file. Files are addressed as `<label>/<relative path>`, where
+the label is the folder's last path component (shown on grant and by
+`/list-folders`); a path without a label is relative to the working directory,
+as it is for every other tool.
+
+`/list-folders` always starts with the working directory — the folder
+tapto-code was started in — marked as such. It is not a grant:
+`/remove-folder` refuses it, and it cannot be made read-only.
 
 The working-directory tools reach into granted folders too, as
 `<label>/<path>` or by absolute path, by one rule: a read is allowed anywhere

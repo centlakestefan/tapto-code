@@ -469,6 +469,8 @@ std::string unquote(std::string s) {
 }
 
 // What /list-folders prints, and what the other folder commands append.
+// The working directory leads the list: it is where tapto-code was started,
+// which is easy to forget, and the model always reaches it.
 std::string list_folders_text(const FolderSet& folders) {
     if (folders.empty()) {
         return "No folders are granted. Grant one with /add-folder <path> [ro|rw].";
@@ -477,7 +479,11 @@ std::string list_folders_text(const FolderSet& folders) {
     out << "The model can reach these folders:\n";
     for (const auto& f : folders.folders()) {
         out << "  " << f.label << "  ->  " << f.root.generic_string()
-            << (f.writable ? "  (read-write)" : "  (read-only)") << "\n";
+            << (f.home ? "  (working directory, read-write)"
+                       : f.writable ? "  (read-write)" : "  (read-only)") << "\n";
+    }
+    if (!folders.has_grants()) {
+        out << "No other folders are granted. Grant one with /add-folder <path> [ro|rw].";
     }
     std::string s = out.str();
     if (!s.empty() && s.back() == '\n') s.pop_back();
@@ -884,12 +890,23 @@ int cmd_chat(const std::string& requested_provider) {
     // the system prompt names what is granted. Tools and prompt both change
     // the request prefix, so they are rebuilt together and only on a change --
     // the cache misses once per grant, not per turn.
+    //
+    // The working directory is the set's home root, so once read_file and
+    // friends are on the table they read the project as well as the grants,
+    // and /list-folders shows where tapto-code was started. It is not a grant:
+    // no command removes it or makes it read-only.
     Context context;
     FolderSet folders;
+    {
+        std::error_code ec;
+        const std::string err = folders.set_home(std::filesystem::current_path(ec).string(),
+                                                 /*writable=*/true);
+        if (!err.empty()) ui::print_error("working directory: " + err);
+    }
     set_granted_folders(&folders); // outlives the chat loop below
     auto rebuild_tools_and_prompt = [&]() {
         context.tools = builtin_tools();
-        if (!folders.empty()) {
+        if (folders.has_grants()) {
             for (auto& t : folder_tools(folders)) context.tools.push_back(std::move(t));
         }
         std::string prompt = resolve_system_prompt();
@@ -1231,8 +1248,14 @@ int cmd_chat(const std::string& requested_provider) {
             }
             if (folders.folders().size() == before) {
                 // Already granted: a repeated grant may still change the mode.
+                // The working directory covers its subfolders and has no
+                // mode to change.
                 const Folder* have = folders.get(label);
-                if (have && have->writable != writable) {
+                if (have && have->home) {
+                    ui::print_line("That is covered by the working directory ('" + label + "', " +
+                                   have->root.generic_string() + "), which the model can "
+                                   "always read and write. Nothing to grant.");
+                } else if (have && have->writable != writable) {
                     folders.set_writable(label, writable);
                     rebuild_tools_and_prompt();
                     ui::print_line("'" + label + "' is now " +
@@ -1250,7 +1273,7 @@ int cmd_chat(const std::string& requested_provider) {
                            (writable ? ", and create or edit files under it with the editor tool, "
                                        "as <label>/<path> or by absolute path. "
                                      : "; it cannot change anything. ") +
-                           (folders.folders().size() == 1
+                           (folders.folders().size() == (folders.home() ? 2u : 1u)
                                 ? std::string("Revoke with /remove-folder ") + label + "."
                                 : "Files are addressed as <label>/<path>; /list-folders "
                                   "shows the labels."));
@@ -1263,6 +1286,11 @@ int cmd_chat(const std::string& requested_provider) {
                                list_folders_text(folders));
                 continue;
             }
+            if (const Folder* f = folders.get(arg); f && f->home) {
+                ui::print_line("'" + arg + "' is the working directory tapto-code was started "
+                               "in; it cannot be removed or made read-only.");
+                continue;
+            }
             if (!folders.remove(arg)) {
                 ui::print_line("'" + arg + "' is not a granted folder.\n\n" +
                                list_folders_text(folders));
@@ -1270,8 +1298,9 @@ int cmd_chat(const std::string& requested_provider) {
             }
             rebuild_tools_and_prompt();
             ui::print_line("Revoked '" + arg + "'. " +
-                           (folders.empty() ? std::string("The model has no folder access now.")
-                                            : "\n" + list_folders_text(folders)));
+                           (folders.has_grants()
+                                ? "\n" + list_folders_text(folders)
+                                : std::string("The model reaches only the working directory now.")));
             continue;
         }
 

@@ -628,6 +628,47 @@ int main() {
             CHECK_TRUE(granted.set_writable(label, true));
         }
 
+        // The working directory as the set's home root, the way main sets it
+        // up: read_file reads the project by a bare relative path (it used to
+        // land in the only grant, or be refused as "outside every granted
+        // folder"), and what it prints, "<home label>/<path>", goes back into
+        // the editor. The home is not a grant, so it cannot be revoked.
+        {
+            CHECK_EQ(granted.set_home(fs::current_path().string(), /*writable=*/true), "");
+            const std::string home = granted.home()->label;
+            fs::create_directories(kDir, ec);
+            write_raw(test_path("home.txt"), "here\n");
+            write_raw((outside / "home.txt").string(), "there\n");
+
+            ToolExecutorFn read = nullptr;
+            const auto lib_tools = tapto::folder_tools(granted);
+            for (const auto& t : lib_tools) if (t.name == "read_file") read = t.executor;
+            CHECK_TRUE(read != nullptr);
+            std::string f = read(ctx, json{{"path", test_path("home.txt")}});
+            CHECK_TRUE(f.find("1|here") != std::string::npos);
+            CHECK_TRUE(f.rfind(home + "/", 0) == 0);
+            f = read(ctx, json{{"path", fs::absolute(test_path("home.txt")).string()}});
+            CHECK_TRUE(f.find("1|here") != std::string::npos);
+            f = read(ctx, json{{"path", label + "/home.txt"}});
+            CHECK_TRUE(f.find("1|there") != std::string::npos);
+
+            // (A working-directory entry named like the label would win, as
+            // it does for a grant, so the label form is only tried without.)
+            if (!fs::exists(fs::path(home), ec)) {
+                r = edit(ctx, json{{"command", "view"}, {"path", home + "/" + test_path("home.txt")}});
+                CHECK_EQ(r, "1|here\n2|\n");
+                r = edit(ctx, json{{"command", "str_replace"},
+                                   {"path", home + "/" + test_path("home.txt")},
+                                   {"old_str", "here"}, {"new_str", "HERE"}});
+                CHECK_EQ(r, "OK");
+                CHECK_EQ(read_raw(test_path("home.txt")), "HERE\n");
+            }
+
+            CHECK_TRUE(!granted.remove(home));
+            CHECK_TRUE(!granted.set_writable(home, false));
+            fs::remove_all(kDir, ec);
+        }
+
         tapto::set_granted_folders(nullptr);
         r = edit(ctx, json{{"command", "view"}, {"path", label + "/docs/note.txt"}});
         CHECK_TRUE(r.rfind("ERROR:", 0) == 0);

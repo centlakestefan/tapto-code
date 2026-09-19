@@ -32,6 +32,22 @@ breaking changes and the patch number everything else.)
 
 ## [Unreleased]
 
+### Fixed
+
+- With a folder granted, `read_file`, `list_files` and `search_files` could not
+  reach the working directory: an absolute path was refused as "outside every
+  granted folder", and a relative one was looked up in the grant, where it was
+  missing or, worse, named a different project's file. The working directory
+  is now their home root — a path without a label is relative to it, `folder`
+  defaults to it, and the tool descriptions, the refusals and the system
+  prompt say so. Its label works in the editor and `find_files` too.
+
+### Changed
+
+- `/list-folders` leads with the working directory, marked as such, so it shows
+  where tapto-code was started. It cannot be removed or made read-only;
+  `/remove-folder` and `/add-folder` say so instead of "not a granted folder".
+
 ## [1.0.2] — 2026-09-16
 
 ### Fixed

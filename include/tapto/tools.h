@@ -21,7 +21,9 @@ std::vector<ToolSpec> builtin_tools();
 // absolute path, as if they were part of the working directory; read-only
 // ones stay the province of the library's read_file and friends. The set must
 // outlive the tools, and may change after this call: it is consulted on every
-// resolution. Null (the default) means no grants.
+// resolution. Null (the default) means no grants. When the set has a home
+// root (FolderSet::set_home) it must be the working directory; its label is
+// then accepted like a grant's.
 void set_granted_folders(const FolderSet* folders);
 
 // True if `name` is a reserved, always-available built-in command (wc, head,

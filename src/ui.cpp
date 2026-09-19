@@ -821,7 +821,7 @@ void print_help(const std::vector<std::string>& tool_names) {
               << "    /add-command <name> <cmd>     add a new allow-listed command\n"
               << "    /add-folder <path> [ro|rw]    grant the model a folder: read-only, or rw to edit\n"
               << "    /remove-folder <path|label>   revoke it\n"
-              << "    /list-folders                 show what is granted\n"
+              << "    /list-folders                 show the working directory and what is granted\n"
               << "    /help                         show this help\n"
               << "    /exit                         quit\n"
               << "\n"
