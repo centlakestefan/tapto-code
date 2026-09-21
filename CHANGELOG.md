@@ -4,6 +4,20 @@ Notable changes to tapto-code. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); each entry is one line
 about what changed for you, and the commit it links to carries the reasoning.
 
+## How an entry is written
+
+Each version's section is published as its release notes on taptomatic.com, so
+the reader is someone who uses tapto-code, not someone who reads its source.
+
+- The entry stands alone. The reader has not seen earlier entries, the code or
+  the discussion, so it does not lean on terms that were introduced there.
+- It says what you saw and what happens now, in the words you would use:
+  commands you type, files you edit, messages on the screen.
+- No internal names: not the tools the model calls, not libraries, not
+  exception codes. The exception is a breaking change to one of them, where
+  the name is the point.
+- One or two sentences. The cause and the reasoning go in the commit message.
+
 ## What counts as a breaking change
 
 tapto-code is a program, not a library, so the surface that has to stay stable
@@ -32,21 +46,19 @@ breaking changes and the patch number everything else.)
 
 ## [Unreleased]
 
+## [1.0.3] — 2026-09-21
+
 ### Fixed
 
-- With a folder granted, `read_file`, `list_files` and `search_files` could not
-  reach the working directory: an absolute path was refused as "outside every
-  granted folder", and a relative one was looked up in the grant, where it was
-  missing or, worse, named a different project's file. The working directory
-  is now their home root — a path without a label is relative to it, `folder`
-  defaults to it, and the tool descriptions, the refusals and the system
-  prompt say so. Its label works in the editor and `find_files` too.
+- After you gave tapto-code access to an extra folder with `/add-folder`, it
+  could no longer read, list or search files in the folder you started it in.
+  Now it can, and a path without a folder name means the folder you started in.
 
 ### Changed
 
-- `/list-folders` leads with the working directory, marked as such, so it shows
-  where tapto-code was started. It cannot be removed or made read-only;
-  `/remove-folder` and `/add-folder` say so instead of "not a granted folder".
+- `/list-folders` shows the folder you started tapto-code in first. That folder
+  cannot be removed or made read-only, and `/remove-folder` and `/add-folder`
+  now say so.
 
 ## [1.0.2] — 2026-09-16
 
@@ -254,7 +266,8 @@ provider's name when `provider` is absent.
 Initial release: an agent that reads, writes and runs code in a sandboxed
 project directory, against Claude, OpenAI or Gemini. ([d9ac02c])
 
-[Unreleased]: https://github.com/centlakestefan/tapto-code/compare/v1.0.2...HEAD
+[Unreleased]: https://github.com/centlakestefan/tapto-code/compare/v1.0.3...HEAD
+[1.0.3]: https://github.com/centlakestefan/tapto-code/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/centlakestefan/tapto-code/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/centlakestefan/tapto-code/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/centlakestefan/tapto-code/compare/v0.3.0...v1.0.0
