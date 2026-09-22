@@ -24,9 +24,9 @@ approved — all from a single self-contained C++17 binary.
 - **Allow-listed commands** — `run_command` only runs commands you've explicitly
   added (with optional `%1` / `%p1` placeholders); it is never a general shell.
 - **Three-scope config** — system / global / project, with git-style precedence.
-- **Self-contained** — one binary; the shared tapto code is vendored in-tree
-  as `libtapto/`, and its dependencies (nlohmann/json, cpp-httplib, OpenSSL)
-  are fetched at build time.
+- **Self-contained** — one binary; the shared tapto code (libtapto) and its
+  dependencies (nlohmann/json, cpp-httplib, OpenSSL) are fetched at build
+  time, each pinned to a version.
 
 Licensed under the Apache License 2.0.
 
@@ -54,10 +54,9 @@ ctest --test-dir build --output-on-failure
 The code every tapto program shares — the config store and secret resolver,
 provider resolution, and the three provider clients (Claude, OpenAI-compatible,
 Gemini) with the agent loop inside — is one static library, **libtapto**,
-vendored in-tree under `libtapto/` and built with `add_subdirectory`. The same
-directory, byte for byte, lives in [tapto-word](../tapto-word) and is on its way
-into tapto-vnc; a fix to the library lands in one copy and is copied to the
-others. What is this program's own: the tool table (`src/tools.cpp`), the
+fetched at a pinned tag from [its own repository](https://github.com/centlakestefan/libtapto)
+and shared with tapto-word, tapto-vnc and their siblings; a fix lands there once
+and each program takes it by bumping `LIBTAPTO_TAG`. What is this program's own: the tool table (`src/tools.cpp`), the
 allow-listed commands, the CLI and chat loop, and `src/ui.cpp`, which gives the
 `tapto::ui` functions the library declares their terminal bodies.
 
@@ -65,7 +64,7 @@ The library's unit tests run under `ctest` alongside this program's.
 
 ### Dependencies
 
-Pinned in `libtapto/CMakeLists.txt` and fetched automatically at configure time
+Pinned by libtapto and fetched automatically at configure time
 via CMake `FetchContent` (needs git + network on the first configure):
 
 - [nlohmann/json](https://github.com/nlohmann/json) `v3.11.3` — JSON.
