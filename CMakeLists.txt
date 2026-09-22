@@ -65,6 +65,7 @@ endfunction()
 add_executable(tapto-code
   src/main.cpp
   src/commands.cpp
+  src/prompt.cpp
   src/tools.cpp
   src/ui.cpp
 )
@@ -113,3 +114,15 @@ target_link_libraries(test-config PRIVATE tapto::tapto)
 tapto_code_warnings(test-config)
 
 add_test(NAME config COMMAND test-config)
+
+# System prompt composition: system-prompt(-file) and the -append keys, and
+# how a prompt file is found, read and, when unusable, skipped.
+add_executable(test-prompt
+  tests/test_prompt.cpp
+  src/prompt.cpp
+)
+target_include_directories(test-prompt PRIVATE include)
+target_link_libraries(test-prompt PRIVATE tapto::tapto)
+tapto_code_warnings(test-prompt)
+
+add_test(NAME prompt COMMAND test-prompt)

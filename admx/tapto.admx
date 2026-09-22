@@ -135,7 +135,7 @@
       <disabledValue><decimal value="0" /></disabledValue>
     </policy>
 
-    <!-- Any other key = value the programs read: trace-file, system-prompt,
+    <!-- Any other key = value the programs read: trace-file, system-prompt(-file),
          a second provider block (review-provider-type, review-model, ...).
          Written to the "settings" subkey, which the programs read as part of
          the parent key; see the note at the top. -->

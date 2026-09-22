@@ -452,7 +452,33 @@ int main() {
     {
         write_raw(file, "alpha\r\nbeta\r\n");
         std::string r = edit(ctx, json{{"command", "view"}, {"path", file}});
-        CHECK_EQ(r, "1|alpha\n2|beta\n3|\n");
+        CHECK_EQ(r, "1|alpha\n2|beta\n");
+    }
+
+    // --- view and wc -l agree on the line count -----------------------------
+    // A file ending in a bare "}" (no trailing newline) used to count one line
+    // short in wc -l, while a file with a trailing newline showed a phantom
+    // empty line in view. Either way the model aimed view_range at the wrong
+    // end and missed the last line.
+    {
+        ToolExecutorFn run = find_run_command(ctx);
+        CHECK_TRUE(run != nullptr);
+        write_raw(file, "int f() {\n    return 1;\n}");
+        CHECK_EQ(run(ctx, json{{"name", "wc"}, {"args", {"-l", file}}}), "3 " + file);
+        CHECK_EQ(edit(ctx, json{{"command", "view"}, {"path", file}, {"view_range", {3, 3}}}),
+                 "3|}\n");
+
+        write_raw(file, "int f() {\n    return 1;\n}\n");
+        CHECK_EQ(run(ctx, json{{"name", "wc"}, {"args", {"-l", file}}}), "3 " + file);
+        CHECK_EQ(edit(ctx, json{{"command", "view"}, {"path", file}, {"view_range", {2, -1}}}),
+                 "2|    return 1;\n3|}\n");
+
+        // Out of range: the error says how long the file is.
+        std::string r = edit(ctx, json{{"command", "view"}, {"path", file}, {"view_range", {1, 4}}});
+        CHECK_TRUE(r.rfind("ERROR:", 0) == 0 && r.find("has 3 lines") != std::string::npos);
+
+        write_raw(file, "");
+        CHECK_EQ(edit(ctx, json{{"command", "view"}, {"path", file}}), "(empty file)");
     }
 
     // --- .git is read-only to the model ------------------------------------
@@ -486,7 +512,7 @@ int main() {
 
         // Reading it is still fine, and a file merely *named* like .git isn't caught.
         r = edit(ctx, json{{"command", "view"}, {"path", cfg}});
-        CHECK_EQ(r, "1|[core]\n2|\n");
+        CHECK_EQ(r, "1|[core]\n");
         r = edit(ctx, json{{"command", "create"},
                            {"path", test_path(".gitignore")},
                            {"file_text", "build/\n"}});
@@ -524,6 +550,41 @@ int main() {
         fs::create_directories(kDir, ec);
     }
 
+    // --- head/tail/cat refuse binary files ---------------------------------
+    // The incident: an agent ran `head` on a build artifact and the raw PE
+    // bytes (NULs, high-bit sequences) flooded the result into the model's
+    // context and the chat transcript. read_file already guards this with
+    // looks_binary(); head/tail/cat must too, so a binary is never returned
+    // as text. The UTF-8 sanitizer downstream can't catch it, because NUL and
+    // control bytes are *valid* UTF-8 and pass replaceInvalidUtf8 unchanged.
+    {
+        ToolExecutorFn run = find_run_command(ctx);
+        CHECK_TRUE(run != nullptr);
+        fs::create_directories(kDir, ec);
+        const std::string blob = test_path("blob.bin");
+        // A NUL inside the first 8 KiB is exactly what looks_binary keys on.
+        write_raw(blob, std::string("MZ\0\0\0\0PE\0\0", 8));
+
+        std::string r = run(ctx, json{{"name", "head"}, {"args", {blob}}});
+        CHECK_TRUE(r.rfind("ERROR:", 0) == 0 && r.find("binary file") != std::string::npos);
+        CHECK_TRUE(r.find("MZ") == std::string::npos);   // raw bytes not leaked
+
+        r = run(ctx, json{{"name", "tail"}, {"args", {blob}}});
+        CHECK_TRUE(r.rfind("ERROR:", 0) == 0 && r.find("binary file") != std::string::npos);
+        CHECK_TRUE(r.find("MZ") == std::string::npos);
+
+        r = run(ctx, json{{"name", "cat"}, {"args", {blob}}});
+        CHECK_TRUE(r.rfind("ERROR:", 0) == 0 && r.find("binary file") != std::string::npos);
+        CHECK_TRUE(r.find("MZ") == std::string::npos);
+
+        // The guard must not over-refuse: a real text file is still shown.
+        write_raw(test_path("plain.txt"), "alpha\nbeta\n");
+        r = run(ctx, json{{"name", "head"}, {"args", {test_path("plain.txt")}}});
+        CHECK_TRUE(r.find("alpha") != std::string::npos);
+        r = run(ctx, json{{"name", "cat"}, {"args", {test_path("plain.txt")}}});
+        CHECK_EQ(r, "alpha\nbeta\n");
+    }
+
     fs::remove_all(kDir, ec);
 
     // --- granted folders ----------------------------------------------------
@@ -548,9 +609,9 @@ int main() {
         // spelling the model picks (view, or the built-in cat); writing is
         // refused with the mode named.
         std::string r = edit(ctx, json{{"command", "view"}, {"path", label + "/docs/note.txt"}});
-        CHECK_EQ(r, "1|alpha\n2|beta\n3|\n");
+        CHECK_EQ(r, "1|alpha\n2|beta\n");
         r = edit(ctx, json{{"command", "view"}, {"path", (outside / "docs" / "note.txt").string()}});
-        CHECK_EQ(r, "1|alpha\n2|beta\n3|\n");
+        CHECK_EQ(r, "1|alpha\n2|beta\n");
         {
             ToolExecutorFn run = find_run_command(ctx);
             std::string c = run(ctx, json{{"name", "cat"}, {"args", {label + "/docs/note.txt"}}});
@@ -571,7 +632,7 @@ int main() {
         // Read-write: label-relative and absolute both work, for view and edits.
         CHECK_TRUE(granted.set_writable(label, true));
         r = edit(ctx, json{{"command", "view"}, {"path", label + "/docs/note.txt"}});
-        CHECK_EQ(r, "1|alpha\n2|beta\n3|\n");
+        CHECK_EQ(r, "1|alpha\n2|beta\n");
         r = edit(ctx, json{{"command", "str_replace"},
                            {"path", (outside / "docs" / "note.txt").string()},
                            {"old_str", "beta"}, {"new_str", "BETA"}});
@@ -598,7 +659,7 @@ int main() {
         fs::create_directories(fs::path(label), ec);
         write_raw(label + "/docs.txt", "local\n");
         r = edit(ctx, json{{"command", "view"}, {"path", label + "/docs.txt"}});
-        CHECK_EQ(r, "1|local\n2|\n");
+        CHECK_EQ(r, "1|local\n");
         fs::remove_all(fs::path(label), ec);
 
         // find_files reports hits under the grant by label.
@@ -656,7 +717,7 @@ int main() {
             // it does for a grant, so the label form is only tried without.)
             if (!fs::exists(fs::path(home), ec)) {
                 r = edit(ctx, json{{"command", "view"}, {"path", home + "/" + test_path("home.txt")}});
-                CHECK_EQ(r, "1|here\n2|\n");
+                CHECK_EQ(r, "1|here\n");
                 r = edit(ctx, json{{"command", "str_replace"},
                                    {"path", home + "/" + test_path("home.txt")},
                                    {"old_str", "here"}, {"new_str", "HERE"}});

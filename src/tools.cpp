@@ -356,7 +356,11 @@ std::string execute_text_editor(Context& /*context*/, const json& in) {
 
             std::string content;
             if (!read_file(path, content)) return "ERROR: Failed to read " + path.string();
-            auto lines = split_lines(content);
+            // content_lines, not split_lines: a trailing newline must not show
+            // up as an extra empty numbered line, or `view` and `wc -l` disagree
+            // about how long the file is and the model mis-aims its view_range.
+            auto lines = content_lines(content);
+            if (lines.empty()) return "(empty file)";
 
             int start = 1;
             int end = static_cast<int>(lines.size());
@@ -375,7 +379,9 @@ std::string execute_text_editor(Context& /*context*/, const json& in) {
                 start = range[0];
                 end = range[1] < 0 ? static_cast<int>(lines.size()) : range[1].get<int>();
                 if (start < 1 || end > static_cast<int>(lines.size()) || start > end) {
-                    return "ERROR: Invalid line range";
+                    return "ERROR: Invalid line range [" + std::to_string(start) + ", " +
+                           std::to_string(end) + "]; the file has " +
+                           std::to_string(lines.size()) + " lines (use -1 as the end for the last line)";
                 }
             }
 
@@ -1064,10 +1070,12 @@ std::string builtin_wc(const std::vector<std::string>& args, const fs::path& bas
     std::string content;
     if (!read_file(p, content)) return "ERROR: wc: cannot read " + file;
 
-    size_t lines = 0, words = 0, bytes = content.size();
+    // Unlike POSIX wc, a last line without a trailing newline counts as a
+    // line: the model uses this number to aim `view` ranges, and a file ending
+    // in a bare "}" would otherwise look one line shorter than `view` shows.
+    size_t lines = content_lines(content).size(), words = 0, bytes = content.size();
     bool in_word = false;
     for (char ch : content) {
-        if (ch == '\n') ++lines;
         bool sp = (ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '\f' || ch == '\v');
         if (!sp && !in_word) { in_word = true; ++words; }
         else if (sp) in_word = false;
@@ -1121,6 +1129,12 @@ std::string builtin_head_tail(bool head, const std::vector<std::string>& args, c
     if (!resolve_in_sandbox(file, p, err, base)) return err;
     std::string content;
     if (!read_file(p, content)) return "ERROR: cannot read " + file;
+    // A binary file has no meaningful lines: dumping raw bytes into the result
+    // would put NULs and invalid UTF-8 into the model's context and the chat
+    // transcript. Refuse the same way read_file does, rather than stream it.
+    if (tapto::looks_binary(content))
+        return "ERROR: " + file + " is a binary file (" + std::to_string(content.size()) +
+               " bytes); " + (head ? "head" : "tail") + " shows no text. Use read_file or the editor instead.";
 
     auto lines = content_lines(content);
     std::ostringstream out;
@@ -1148,6 +1162,11 @@ std::string builtin_cat(const std::vector<std::string>& args, const fs::path& ba
     if (fs::is_directory(p, ec)) return "ERROR: cat: " + file + " is a directory";
     std::string content;
     if (!read_file(p, content)) return "ERROR: cat: cannot read " + file;
+    // Binary files have no text to print; refuse the same way read_file does,
+    // so raw bytes never reach the model's context or the chat transcript.
+    if (tapto::looks_binary(content))
+        return "ERROR: cat: " + file + " is a binary file (" + std::to_string(content.size()) +
+               " bytes); it has no text to show.";
     if (content.size() > kBuiltinMaxBytes)
         content = content.substr(0, kBuiltinMaxBytes) +
                   "\n... [truncated; use the editor 'view' command with view_range for more]";

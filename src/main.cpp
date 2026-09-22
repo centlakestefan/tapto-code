@@ -6,6 +6,7 @@
 #include "tapto/fstools.h"
 #include "tapto/paths.h"
 #include "tapto/policy.h"
+#include "tapto/prompt.h"
 #include "tapto/provider.h"
 #include "tapto/secret.h"
 #include "tapto/tools.h"
@@ -82,7 +83,9 @@ const char* kUsage =
     "\n"
     "Chat config keys: provider (which provider block to use), max-output-tokens\n"
     "  (optional), max-tool-iterations (optional, default 200), print-cot\n"
-    "  (optional, default true), system-prompt, trace-file, connection-timeout\n"
+    "  (optional, default true), system-prompt or system-prompt-file (replaces the\n"
+    "  built-in prompt), system-prompt-append or system-prompt-append-file (added\n"
+    "  after it), trace-file, connection-timeout\n"
     "  (seconds, default 30), read-timeout (seconds to wait for the whole answer,\n"
     "  default 300; raise it for a slow local model), and per provider\n"
     "  <name>-reasoning-effort (openai dialect only: low, medium, high, ...)\n"
@@ -171,7 +174,8 @@ std::string provider_name_of_key(const std::string& key, const std::string& bloc
 bool is_supported_config_key(const std::string& key) {
     static const char* kKeys[] = {
         "provider", "provider-type", "api-key", "provider-url", "model",
-        "max-output-tokens", "max-tool-iterations", "system-prompt", "trace-file", "print-cot",
+        "max-output-tokens", "max-tool-iterations", "system-prompt", "system-prompt-file",
+        "system-prompt-append", "system-prompt-append-file", "trace-file", "print-cot",
         "connection-timeout", "read-timeout",
         "reasoning-effort",
     };
@@ -186,7 +190,8 @@ bool is_supported_config_key(const std::string& key) {
 
 const char* kSupportedKeysHelp =
     "provider, provider-url, model, api-key, "
-    "max-output-tokens, max-tool-iterations, system-prompt, trace-file, print-cot, "
+    "max-output-tokens, max-tool-iterations, system-prompt, system-prompt-file, "
+    "system-prompt-append, system-prompt-append-file, trace-file, print-cot, "
     "connection-timeout, read-timeout, "
     "and per provider <name>-provider-type, <name>-provider-url, <name>-model, "
     "<name>-api-key, <name>-reasoning-effort";
@@ -442,11 +447,25 @@ const char* kDefaultSystemPrompt =
     "pre-approved commands (use list_commands to see them and run_command to "
     "run them).";
 
-// The effective system prompt: whatever is configured, else the built-in
-// default used in-memory. Chat never persists anything — persisting the default
-// is the job of `tapto-code install`.
+// The effective system prompt: whatever is configured (system-prompt or
+// system-prompt-file, plus the -append keys; see tapto/prompt.h), else the
+// built-in default used in-memory. Chat never persists anything — persisting
+// the default is the job of `tapto-code install`.
+//
+// The prompt is rebuilt on every folder grant, so a problem with a prompt file
+// is reported once per session rather than on each rebuild.
 std::string resolve_system_prompt() {
-    return get_effective("system-prompt").value_or(kDefaultSystemPrompt);
+    static std::vector<std::string> reported;
+    std::vector<std::string> problems;
+    std::error_code ec;
+    std::string prompt = compose_system_prompt(effective_config(), std::filesystem::current_path(ec),
+                                               kDefaultSystemPrompt, problems);
+    for (const auto& p : problems) {
+        if (std::find(reported.begin(), reported.end(), p) != reported.end()) continue;
+        ui::print_warning(p);
+        reported.push_back(p);
+    }
+    return prompt;
 }
 
 // Trim surrounding whitespace (incl. a trailing CR from piped CRLF input).

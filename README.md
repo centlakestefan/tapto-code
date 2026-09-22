@@ -257,8 +257,32 @@ Chat config keys:
 | `connection-timeout` | no  | `30` — seconds to wait for the provider to accept the connection |
 | `read-timeout`  | no       | `300` — seconds to wait for the whole answer; the reply is not streamed, so raise it for a slow local model (a timeout shorter than the generation retries the same request until the retry budget is spent) |
 | `print-cot`     | no       | `true` — show the model's intermediate reasoning/text during tool calls; set `false` to keep it in the trace file only |
-| `system-prompt` | no       | built-in prompt                                      |
+| `system-prompt` | no       | built-in prompt — replaces it with a one-line value  |
+| `system-prompt-file` | no  | unset — replaces the built-in prompt with a text file's contents (see below) |
+| `system-prompt-append` | no | unset — added after the prompt, so project rules don't need a copy of the built-in one |
+| `system-prompt-append-file` | no | unset — same, from a text file; added after `system-prompt-append` |
 | `trace-file`    | no       | unset — set to a path to enable diagnostic logging  |
+
+### System prompt
+
+The config holds one `key = value` per line, so a prompt longer than a line
+goes in a text file:
+
+```sh
+tapto-code config set system-prompt-append-file prompt.md   # this project only
+tapto-code --global config set system-prompt-file C:/prompts/base.md
+```
+
+`system-prompt` or `system-prompt-file` **replaces** the built-in prompt, which
+is what tells the model how to find and run the allow-listed commands; if both
+are set, the one from the more specific scope wins, and the file on a tie.
+`system-prompt-append` and then `system-prompt-append-file` are **added after**
+whichever prompt is in effect, separated by a blank line — usually what you
+want for project rules. When the prompt is set by group policy, only the
+policy's own append keys are added. A relative path in the local (project) config is
+resolved against the folder tapto-code was started in, one in the global or
+system config against that config file's folder, and a policy path must be
+absolute. A file that is missing, empty or binary is skipped with a warning.
 
 ### Naming providers
 

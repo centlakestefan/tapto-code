@@ -102,7 +102,7 @@ Enabled or Not configured: users may allow-list commands of their own.
 Writes the config key "allow-user-commands".</string>
 
       <string id="AdditionalSettings">Additional settings</string>
-      <string id="AdditionalSettings_Explain">Any other configuration key the programs read, as name and value pairs, for keys this template has no dedicated setting for: trace-file, system-prompt, print-cot, or a second provider block (review-provider-type, review-provider-url, review-model, review-api-key).
+      <string id="AdditionalSettings_Explain">Any other configuration key the programs read, as name and value pairs, for keys this template has no dedicated setting for: trace-file, system-prompt, system-prompt-file (an absolute path), system-prompt-append, system-prompt-append-file (a system prompt set here is not added to by the user's own append keys; set the append keys here to add rules while leaving the prompt to the user), print-cot, or a second provider block (review-provider-type, review-provider-url, review-model, review-api-key).
 
 Each key listed here is locked for the user. The value names are exactly the keys the programs document; run "tapto-code --help" for the list.
 

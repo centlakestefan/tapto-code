@@ -46,6 +46,20 @@ breaking changes and the patch number everything else.)
 
 ## [Unreleased]
 
+### Added
+
+- `system-prompt-file` sets the system prompt from a text file, so it can run
+  to several lines; `system-prompt-append` and `system-prompt-append-file` add
+  your own instructions after the built-in prompt instead of replacing it.
+
+### Fixed
+
+- The model could miss the last line of a file that doesn't end with a
+  newline, such as a closing `}`: counting the lines gave one fewer than
+  viewing the file showed. Both now agree.
+- Showing the start, end or whole of a binary file no longer puts its raw bytes
+  into the chat; you get a short message that it is a binary file instead.
+
 ## [1.0.3] — 2026-09-21
 
 ### Fixed
