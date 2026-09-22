@@ -114,8 +114,9 @@ std::string compose_system_prompt(const std::vector<EffectiveEntry>& config,
     if (const auto extra_file = find_entry(config, "system-prompt-append-file");
         extra_file && usable(*extra_file)) {
         std::string text;
-        if (load_prompt_file(*extra_file, working_dir, text, problems) && !text.empty()) {
-            prompt += "\n\n" + text;
+        if (load_prompt_file(*extra_file, working_dir, text, problems)) {
+            if (!text.empty()) prompt += "\n\n" + text;
+            else problems.push_back("system-prompt-append-file: " + extra_file->value + " is empty");
         }
     }
     return prompt;

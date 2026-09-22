@@ -46,6 +46,17 @@ breaking changes and the patch number everything else.)
 
 ## [Unreleased]
 
+### Security
+
+- A repository's git directory is now protected by what it holds rather than
+  by being called `.git`, so a linked worktree, a repository created with
+  `--separate-git-dir` and a bare repository in the tree are covered too, as
+  is a `.git` that is a symbolic link. Allow-listed commands are held to the
+  same rule: neither the folder a command runs in nor a path argument you
+  declared as a path (`%p1`, `%p*`) can be inside a git directory. A plain
+  `%1` is still passed through as you wrote the command. Reading any of it
+  still works.
+
 ### Added
 
 - `system-prompt-file` sets the system prompt from a text file, so it can run
@@ -54,6 +65,9 @@ breaking changes and the patch number everything else.)
 
 ### Fixed
 
+- A path argument (`%p1`) given to a command that runs in a subfolder was
+  looked up from the folder you started tapto-code in instead, so the command
+  could be handed the wrong file, or one that isn't there.
 - The model could miss the last line of a file that doesn't end with a
   newline, such as a closing `}`: counting the lines gave one fewer than
   viewing the file showed. Both now agree.

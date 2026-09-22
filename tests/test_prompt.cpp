@@ -63,6 +63,7 @@ int main() {
     fs::remove_all(kDir, ec);
     fs::create_directories(kDir, ec);
     const std::string abs_dir = fs::absolute(kDir).string();
+    write_raw(fs::path(kDir) / "empty-append.md", "\n\n");
 
     // --- nothing configured: the built-in prompt ---------------------------
     {
@@ -153,6 +154,14 @@ int main() {
                           {"system-prompt-append", "ORG RULES", Level::Policy}},
                          problems),
                  "USER\n\nORG RULES");
+    }
+
+    // --- an empty append file says so too, rather than silently adding nothing
+    {
+        std::vector<std::string> problems;
+        CHECK_EQ(compose({{"system-prompt-append-file", "empty-append.md", Level::Local}}, problems),
+                 kBuiltin);
+        CHECK_TRUE(problems.size() == 1 && problems[0].find("is empty") != std::string::npos);
     }
 
     // --- empty and binary files are not used --------------------------------

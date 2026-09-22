@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -279,30 +280,90 @@ bool resolve_in_sandbox(const std::string& input, fs::path& out, std::string& er
     return false;
 }
 
-// True if `resolved` (already inside the sandbox) is a repository's .git
-// directory or anything under it. The model has no reason to write there, and
-// a writable .git turns every allow-listed git command into code execution:
-// .git/config can name a core.fsmonitor or core.hooksPath command that even
-// `git status` runs, and .git/hooks/* run on commit. Checked against whichever
-// root the path landed in, so a writable grant is covered too.
-bool in_git_dir(const fs::path& resolved) {
-    const Folder* owner = granted_owner(resolved, /*writable_only=*/true);
-    const fs::path& root = owner ? owner->root : sandbox_root();
-    for (const auto& part : resolved.lexically_relative(root)) {
-        if (part == ".git") return true;
+// One path component compared the way the filesystem would: Windows is
+// case-insensitive, so ".GIT" names the same directory as ".git" there.
+bool component_is(const fs::path& part, const char* name) {
+#ifdef _WIN32
+    const std::string s = part.string();
+    const size_t n = std::strlen(name);
+    if (s.size() != n) return false;
+    for (size_t i = 0; i < n; ++i) {
+        if (std::tolower(static_cast<unsigned char>(s[i])) !=
+            std::tolower(static_cast<unsigned char>(name[i])))
+            return false;
+    }
+    return true;
+#else
+    return part == fs::path(name);
+#endif
+}
+
+// True if any component of `path` is named ".git".
+bool has_git_component(const fs::path& path) {
+    for (const auto& part : path) {
+        if (component_is(part, ".git")) return true;
     }
     return false;
 }
 
-// Resolve a path the model wants to write to: sandboxed, and never under .git.
+// True if `dir` is a git directory judged by what it holds rather than by its
+// name: HEAD beside objects/ and refs/ is the layout git itself looks for.
+// This is what catches a repository whose git directory is not called ".git"
+// — `git init --separate-git-dir`, a linked worktree, or a bare repo planted
+// in the tree — where the name-based check has nothing to match.
+bool looks_like_git_dir(const fs::path& dir) {
+    std::error_code ec;
+    return fs::exists(dir / "HEAD", ec) && fs::is_directory(dir / "objects", ec) &&
+           fs::is_directory(dir / "refs", ec);
+}
+
+// True if writing to `resolved` would land in a repository's git directory.
+// The model has no reason to write there, and a writable git directory turns
+// every allow-listed git command into code execution: config can name a
+// core.fsmonitor or core.hooksPath command that even `git status` runs, and
+// hooks/* run on commit. Checked against whichever root the path landed in, so
+// a writable grant is covered too.
+//
+// Three ways in, because one name test isn't enough:
+//   the resolved path    the ordinary case, ".git/hooks/pre-commit";
+//   `input` as written   paths are canonicalized before they get here, so a
+//                        symlinked .git would otherwise resolve to a target
+//                        with no ".git" component left to match;
+//   an ancestor's shape  a git directory under any other name (above).
+bool in_git_dir(const fs::path& resolved, const std::string& input) {
+    const Folder* owner = granted_owner(resolved, /*writable_only=*/true);
+    const fs::path& root = owner ? owner->root : sandbox_root();
+
+    if (has_git_component(resolved.lexically_relative(root))) return true;
+    if (has_git_component(fs::path(input).lexically_normal())) return true;
+
+    // Up from the target to the root it landed in, the root included: a bare
+    // repository can sit at the top of the tree. The target itself is the
+    // starting point when it is a directory, which is what a command's `cwd`
+    // is.
+    std::error_code ec;
+    fs::path start = fs::is_directory(resolved, ec) ? resolved : resolved.parent_path();
+    for (fs::path dir = start; is_under(root, dir); dir = dir.parent_path()) {
+        if (looks_like_git_dir(dir)) return true;
+        if (dir == dir.parent_path()) break; // filesystem root, no more parents
+    }
+    return false;
+}
+
+// Refuse a path that a write must not touch. Shared by the editor and by
+// run_command, so a command cannot reach what the editor is refused.
+bool refuse_git_write(const fs::path& resolved, const std::string& input, std::string& error) {
+    if (!in_git_dir(resolved, input)) return false;
+    error = "ERROR: '" + input + "' is inside a repository's git directory, which "
+            "tapto-code never writes to. Use an allow-listed git command instead.";
+    return true;
+}
+
+// Resolve a path the model wants to write to: sandboxed, and never in a git
+// directory.
 bool resolve_for_write(const std::string& input, fs::path& out, std::string& error) {
     if (!resolve_in_sandbox(input, out, error, fs::path(), Scope::Write)) return false;
-    if (in_git_dir(out)) {
-        error = "ERROR: '" + input + "' is inside .git, which tapto-code never "
-                "modifies. Use an allow-listed git command instead.";
-        return false;
-    }
-    return true;
+    return !refuse_git_write(out, input, error);
 }
 
 // --- text editor tool -----------------------------------------------------
@@ -356,6 +417,15 @@ std::string execute_text_editor(Context& /*context*/, const json& in) {
 
             std::string content;
             if (!read_file(path, content)) return "ERROR: Failed to read " + path.string();
+            // Numbering a binary file would put NULs and invalid UTF-8 into the
+            // model's context and the chat transcript, which the UTF-8
+            // sanitizer downstream cannot catch — they are valid UTF-8. cat,
+            // head and tail refuse the same way, so `view` must not be the way
+            // around them.
+            if (looks_binary(content)) {
+                return "ERROR: " + path.string() + " is a binary file (" +
+                       std::to_string(content.size()) + " bytes); it has no text to show.";
+            }
             // content_lines, not split_lines: a trailing newline must not show
             // up as an extra empty numbered line, or `view` and `wc -l` disagree
             // about how long the file is and the model mis-aims its view_range.
@@ -789,7 +859,7 @@ bool template_has_placeholder(const std::string& tpl) {
 // (path) type additionally requires the value to resolve inside the sandbox and
 // substitutes the resolved absolute path. %* / %p* take all remaining values.
 bool build_argv(const std::string& tpl, const std::vector<std::string>& args,
-                std::vector<std::string>& argv, std::string& error) {
+                const fs::path& base, std::vector<std::string>& argv, std::string& error) {
     // Highest positional index used; %* expands to the args beyond it.
     int max_idx = 0;
     bool has_star = false;
@@ -815,10 +885,16 @@ bool build_argv(const std::string& tpl, const std::vector<std::string>& args,
         return false;
     }
 
+    // A %p value is a path the command may write to (a formatter's -i target,
+    // a copy's destination), so it is held to what the editor is held to: the
+    // sandbox, and never a git directory. It resolves against `base`, the
+    // directory the command will run in, so a relative value means the same
+    // file to the model, to the built-ins and to the process itself.
     auto subst_path = [&](const std::string& value, std::string& out) -> bool {
         fs::path resolved;
         std::string perr;
-        if (!resolve_in_sandbox(value, resolved, perr, fs::path(), Scope::Write)) { error = perr; return false; }
+        if (!resolve_in_sandbox(value, resolved, perr, base, Scope::Write)) { error = perr; return false; }
+        if (refuse_git_write(resolved, value, perr)) { error = perr; return false; }
         out = resolved.string();
         return true;
     };
@@ -1036,15 +1112,9 @@ std::string exec_capture(const std::vector<std::string>& argv, const fs::path& c
 
 constexpr size_t kBuiltinMaxBytes = 64000;
 
-// Real content lines: split on '\n' and drop the synthetic trailing empty
-// segment split_lines yields when the file ends with a newline.
-std::vector<std::string> content_lines(const std::string& content) {
-    if (content.empty()) return {};
-    auto lines = split_lines(content);
-    if (content.back() == '\n' && !lines.empty() && lines.back().empty())
-        lines.pop_back();
-    return lines;
-}
+// Real content lines come from tapto::content_lines (tapto/fstools.h): `view`,
+// `wc -l` and the library's read_file must count a file the same way, which a
+// copy of the function here would leave to chance.
 
 std::string cap_output(std::string s) {
     if (s.size() > kBuiltinMaxBytes)
@@ -1134,7 +1204,7 @@ std::string builtin_head_tail(bool head, const std::vector<std::string>& args, c
     // transcript. Refuse the same way read_file does, rather than stream it.
     if (tapto::looks_binary(content))
         return "ERROR: " + file + " is a binary file (" + std::to_string(content.size()) +
-               " bytes); " + (head ? "head" : "tail") + " shows no text. Use read_file or the editor instead.";
+               " bytes); " + (head ? "head" : "tail") + " shows no text.";
 
     auto lines = content_lines(content);
     std::ostringstream out;
@@ -1349,8 +1419,12 @@ std::string execute_run_command(Context& /*context*/, const json& in) {
             if (!in["cwd"].is_string()) return "ERROR: 'cwd' must be a string.";
             const std::string raw = in["cwd"].get<std::string>();
             std::string err;
-            const Scope scope = is_builtin_command(name) ? Scope::Read : Scope::Write;
+            const bool builtin = is_builtin_command(name);
+            const Scope scope = builtin ? Scope::Read : Scope::Write;
             if (!resolve_in_sandbox(raw, base, err, fs::path(), scope)) return err;
+            // A built-in only reads, so it may look inside a git directory; a
+            // shell command run there could write whatever it likes.
+            if (!builtin && refuse_git_write(base, raw, err)) return err;
             std::error_code ec;
             if (!fs::is_directory(base, ec)) {
                 return "ERROR: cwd '" + raw + "' is not an existing directory. "
@@ -1385,7 +1459,7 @@ std::string execute_run_command(Context& /*context*/, const json& in) {
             // model-supplied values are passed literally (no quoting needed).
             std::vector<std::string> argv;
             std::string err;
-            if (!build_argv(tpl, args, argv, err)) return err;
+            if (!build_argv(tpl, args, base, argv, err)) return err;
             display = join_argv(argv);
             output = exec_capture(argv, base, exit_code);
         } else {

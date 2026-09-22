@@ -15,6 +15,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -75,6 +76,29 @@ void write_raw(const std::string& rel, const std::string& bytes) {
 std::string read_raw(const std::string& rel) {
     std::ifstream in(rel, std::ios::binary);
     return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
+std::string get_env(const std::string& name) {
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4996) // std::getenv is the portable, intended call here
+#endif
+    const char* v = std::getenv(name.c_str());
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
+    return v ? std::string(v) : std::string();
+}
+
+// Point the config store at a directory of the test's own, so the allow-listed
+// commands a test needs are its own and not whatever the machine has.
+void set_env(const std::string& name, const std::string& value) {
+#ifdef _WIN32
+    _putenv_s(name.c_str(), value.c_str());
+#else
+    if (value.empty()) unsetenv(name.c_str());
+    else setenv(name.c_str(), value.c_str(), 1);
+#endif
 }
 
 ToolExecutorFn find_editor(Context& ctx) {
@@ -519,6 +543,110 @@ int main() {
         CHECK_EQ(r, "OK");
     }
 
+    // --- a git directory under another name is still refused ----------------
+    // The name ".git" is a convention, not the rule: `git init
+    // --separate-git-dir`, a linked worktree and a bare repo all put the same
+    // dangerous files (config, hooks/) somewhere else. HEAD beside objects/
+    // and refs/ is what git itself looks for, so that is what is refused.
+    {
+        const std::string planted = test_path("planted");
+        fs::create_directories(planted + "/objects", ec);
+        fs::create_directories(planted + "/refs", ec);
+        write_raw(planted + "/HEAD", "ref: refs/heads/main\n");
+
+        std::string r = edit(ctx, json{{"command", "create"},
+                                       {"path", planted + "/hooks/pre-commit"},
+                                       {"file_text", "#!/bin/sh\n"}});
+        CHECK_TRUE(r.rfind("ERROR:", 0) == 0 && r.find("git directory") != std::string::npos);
+        CHECK_TRUE(!fs::exists(planted + "/hooks/pre-commit"));
+
+        r = edit(ctx, json{{"command", "create"},
+                           {"path", planted + "/config"},
+                           {"file_text", "[core]\n\tfsmonitor = evil\n"}});
+        CHECK_TRUE(r.rfind("ERROR:", 0) == 0);
+        CHECK_TRUE(!fs::exists(planted + "/config"));
+
+        // Reading it stays allowed, and an ordinary folder is untouched by the
+        // rule — only all three together mean a repository.
+        write_raw(planted + "/HEAD", "ref: refs/heads/main\n");
+        CHECK_EQ(edit(ctx, json{{"command", "view"}, {"path", planted + "/HEAD"}}),
+                 "1|ref: refs/heads/main\n");
+        fs::create_directories(test_path("plainfolder/refs"), ec);
+        write_raw(test_path("plainfolder/HEAD"), "not a repo\n");
+        r = edit(ctx, json{{"command", "create"},
+                           {"path", test_path("plainfolder/notes.txt")},
+                           {"file_text", "hello\n"}});
+        CHECK_EQ(r, "OK");
+        fs::remove_all(planted, ec);
+        fs::remove_all(test_path("plainfolder"), ec);
+    }
+
+    // --- a symlinked .git can't resolve the guard away ----------------------
+    // Paths are canonicalized before the check, so ".git" pointing elsewhere
+    // would otherwise arrive as a path with no ".git" component left in it.
+    // Skipped where symlinks need a privilege the test doesn't have.
+    {
+        const std::string real = test_path("realgit");
+        fs::create_directories(real + "/objects", ec);
+        fs::create_directories(real + "/refs", ec);
+        write_raw(real + "/HEAD", "ref: refs/heads/main\n");
+        fs::create_directory_symlink("realgit", test_path(".git"), ec);
+        if (!ec) {
+            std::string r = edit(ctx, json{{"command", "create"},
+                                           {"path", test_path(".git/hooks/pre-commit")},
+                                           {"file_text", "#!/bin/sh\n"}});
+            CHECK_TRUE(r.rfind("ERROR:", 0) == 0);
+            CHECK_TRUE(!fs::exists(real + "/hooks/pre-commit"));
+
+            // ...and by its real name, where only the shape gives it away.
+            r = edit(ctx, json{{"command", "create"},
+                               {"path", real + "/hooks/pre-commit"},
+                               {"file_text", "#!/bin/sh\n"}});
+            CHECK_TRUE(r.rfind("ERROR:", 0) == 0 && r.find("git directory") != std::string::npos);
+            CHECK_TRUE(!fs::exists(real + "/hooks/pre-commit"));
+            fs::remove(test_path(".git"), ec);
+        } else {
+            std::cout << "  (skipped: symlinks not permitted here)\n";
+        }
+        fs::remove_all(real, ec);
+        ec.clear();
+    }
+
+    // --- run_command is held to the same rule as the editor ------------------
+    // A command's `cwd` and its %p path arguments used to reach where the
+    // editor is refused, which is the whole guard with one step added.
+    {
+        ToolExecutorFn run = find_run_command(ctx);
+        CHECK_TRUE(run != nullptr);
+        const fs::path fake_home = fs::absolute(test_path("home"));
+        fs::create_directories(fake_home / ".tapto", ec);
+        write_raw((fake_home / ".tapto" / "commands").string(), "say = echo hi\nsay-path = echo %p1\n");
+        const std::string home_var =
+#ifdef _WIN32
+            "USERPROFILE";
+#else
+            "HOME";
+#endif
+        const std::string saved = get_env(home_var);
+        set_env(home_var, fake_home.string());
+
+        fs::create_directories(test_path(".git/hooks"), ec);
+        std::string r = run(ctx, json{{"name", "say"}, {"cwd", test_path(".git")}});
+        CHECK_TRUE(r.rfind("ERROR:", 0) == 0 && r.find("git directory") != std::string::npos);
+
+        r = run(ctx, json{{"name", "say-path"}, {"args", {test_path(".git/hooks/pre-commit")}}});
+        CHECK_TRUE(r.rfind("ERROR:", 0) == 0 && r.find("git directory") != std::string::npos);
+
+        // A built-in only reads, so it may still be pointed inside .git.
+        write_raw(test_path(".git/config"), "[core]\n");
+        r = run(ctx, json{{"name", "cat"}, {"args", {test_path(".git/config")}}});
+        CHECK_EQ(r, "[core]\n");
+
+        set_env(home_var, saved);
+        fs::remove_all(test_path(".git"), ec);
+        fs::remove_all(fake_home, ec);
+    }
+
     // --- run_command `path` fallback ---------------------------------------
     // The model sometimes sends `{"name":"ls","path":"driver"}` instead of
     // `{"name":"ls","args":["driver"]}` (conflating with the text editor). The
@@ -574,6 +702,12 @@ int main() {
         CHECK_TRUE(r.find("MZ") == std::string::npos);
 
         r = run(ctx, json{{"name", "cat"}, {"args", {blob}}});
+        CHECK_TRUE(r.rfind("ERROR:", 0) == 0 && r.find("binary file") != std::string::npos);
+        CHECK_TRUE(r.find("MZ") == std::string::npos);
+
+        // The editor's view must refuse it too, or it is simply the way round
+        // the other three — which is where a refused model tries next.
+        r = edit(ctx, json{{"command", "view"}, {"path", blob}});
         CHECK_TRUE(r.rfind("ERROR:", 0) == 0 && r.find("binary file") != std::string::npos);
         CHECK_TRUE(r.find("MZ") == std::string::npos);
 

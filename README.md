@@ -407,11 +407,25 @@ since they are indistinguishable in what the model was shown.
 **Sandbox:** the file tools (`str_replace_based_edit_tool`, `find_files`) are
 confined to the directory tapto-code was started in and its subdirectories. Paths
 that resolve outside that subtree — via `..`, an absolute path, or a symlink —
-are rejected. Inside the tree, `.git/` is read-only to the editor: a writable
-`.git/config` (`core.fsmonitor`, `core.hooksPath`) or `.git/hooks` would turn
+are rejected. Inside the tree, a repository's git directory is read-only: a
+writable `config` (`core.fsmonitor`, `core.hooksPath`) or `hooks/` would turn
 any allow-listed git command — even `git status` — into arbitrary code
-execution. (`run_command` is governed separately: it can only run the
-commands you explicitly allow-list, so its reach is whatever you configure.)
+execution. The rule is not the name `.git`: a directory holding `HEAD`,
+`objects/` and `refs/` is one, whatever it is called, which covers a linked
+worktree, `git init --separate-git-dir`, and a bare repo sitting in the tree.
+A symlinked `.git` is caught as written, before the link is resolved. Reading
+any of it is still allowed. The same rule applies to `run_command`: a
+command's `cwd` and its `%p` path arguments are refused there too (the
+read-only built-ins may still be pointed at it).
+
+**What the sandbox does not cover:** allow-listing a command that runs files
+from the tree — `make`, `npm run build`, `cmake`, a test runner — gives the
+model arbitrary code execution in that tree, because it can edit the
+`Makefile`, `package.json` or `conftest.py` that command reads. That is the
+trust you grant by allow-listing a build, and no path rule can take it back.
+Hooks a repository keeps in the worktree rather than in the git directory
+(`core.hooksPath`, husky's `.husky/`) are ordinary editable files for the same
+reason.
 
 ## Commands
 
@@ -492,7 +506,8 @@ subcommand). Use `--` before a placeholder if a value might start with `-`
 marks a path that must stay inside the working-directory sandbox. The value is
 resolved the same way as the file tools and the command is refused if it points
 outside (via `..`, an absolute path, or a symlink); the resolved absolute path
-is substituted.
+is substituted. A relative value is resolved against the `cwd` the command runs
+in, so it names the same file to the agent and to the process.
 
 ```sh
 tapto-code command add fmt clang-format -i %p1   # only formats files in-tree
