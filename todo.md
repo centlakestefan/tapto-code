@@ -1,3 +1,188 @@
+# tapto-code todo
+
+Open work first, newest release last. The libtapto port further down is done
+and kept for its notes.
+
+---
+
+# 1.0.5: the version in every request
+
+Committed, not pushed (25 Sep): libtapto `91151da` tagged `v0.2.0`
+(`AiConfig::setUserAgent`, sent by all three clients) and tapto-code `f1e7e2b`
+(`User-Agent: tapto-code/<version> (<commit>; <os>)`, `LIBTAPTO_TAG` v0.2.0,
+README policy section, `[Unreleased]` entry).
+
+- [ ] Push libtapto `main` and `v0.2.0` **before** tapto-code `main`: CI
+      fetches the tag at configure time and fails without it.
+- [ ] The LiteLLM side: a pre-call hook that reads the request's User-Agent
+      and refuses anything without `tapto-code/` or below a minimum version,
+      with a 4xx whose message says where to get the update. tapto-code does
+      not retry a 4xx and prints its text, so the message reaches the user
+      as written. Versions before 1.0.5 send cpp-httplib's default, so
+      "requires tapto-code/" catches all of them.
+- [ ] Release 1.0.5 as 1.0.4 was: CMakeLists version, `[1.0.5]` section with
+      date and compare links, tag, then the pin in tapto-code-install.
+
+---
+
+# 1.1.0: plugins
+
+Features beyond the core come as plugin modules, a DLL/SO each, instead of
+growing tapto-code. The core stays small enough to audit; a customer who
+wants Jira adds `jira.dll` rather than getting Jira code in every install.
+First plugin: the Jira tools from tapto-jira, so one session can compare code
+with tickets (`/add-plugin jira`).
+
+Decisions (25 Sep):
+
+- **sCom, in-process.** The plugin boundary is sCom from cpr (the Centlake
+  Portable Runtime), the shell-extension style of COM: the host loads a
+  module, asks it for an interface, calls it.
+- **Closed, not MCP.** MCP lets the user plug in anything; the point here is
+  a set of plugins the organization controls. If a customer wants MCP, it is
+  one more plugin (an MCP bridge), under the same policy as the rest.
+- **ro/rw per plugin,** as folders have it: `/add-plugin jira` gives the
+  read tools, `/add-plugin jira rw` also the ones that write. The Jira in
+  question is self-hosted and closed, which is what keeps prompt injection
+  through ticket text in bounds; ro by default keeps it there.
+
+## Interfaces (`tapto/plugin.h`)
+
+JSON crosses the boundary, not typed methods. The tool surface is JSON
+already (schema out, arguments in, text back), so a small vtable carries any
+plugin, and a small vtable is one that stays stable.
+
+```cpp
+// Exported by each module; the DllGetClassObject of this system.
+extern "C" SRESULT C_API TaptoGetPlugin(const GUID& riid, void** ppv);
+// OK once no object of the module is alive; see /remove-plugin below.
+extern "C" SRESULT C_API TaptoCanUnloadNow();
+
+interface ITaptoPlugin : public IBase {
+    // {name, version, config_keys[], prompt,
+    //  tools[{name, description, schema, writes}]}
+    virtual SRESULT C_API Describe(char** json_out) = 0;
+    // The plugin's own config keys, secrets already resolved by the host.
+    virtual SRESULT C_API Configure(ITaptoHost* host, const char* json_config) = 0;
+    virtual SRESULT C_API CallTool(const char* name, const char* json_args,
+                                   char** result_out) = 0;
+};
+
+// Optional, found by QueryInterface: a plugin that can be unloaded.
+interface ITaptoPluginUnload : public IBase {
+    virtual SRESULT C_API Shutdown() = 0; // close connections, stop threads
+};
+
+// What a plugin may ask of the core.
+interface ITaptoHost : public IBase {
+    virtual SRESULT C_API Log(const char* line) = 0;     // to the trace file
+    virtual SRESULT C_API IsCancelled() = 0;             // ESC, for long calls
+};
+```
+
+Strings coming back (`json_out`, `result_out`) are allocated with
+`sComStringAlloc`/`sComStringDup` and freed by the host with
+`sComStringFree`. A new capability is a new interface (`ITaptoPlugin2`)
+found by QueryInterface, so old plugins load in new hosts and the other way
+round.
+
+## The core decides, so no plugin can get it wrong
+
+- **ro/rw:** each tool declares `writes`. In ro mode the host does not offer
+  those tools to the model at all, which is stronger than refusing the call,
+  and it is one rule in the audited core rather than one per plugin.
+- **Secrets:** the plugin names `jira-api-token`; the host resolves
+  `wincred:` / `env:` / `cmd:` and hands over the value in `Configure`. No
+  plugin parses a secret reference.
+- **Config keys:** the keys a plugin declares are accepted by `config set`
+  while it is installed. That also settles, for plugins, the old follow-up
+  about `config set` refusing sibling programs' keys (see the libtapto port's
+  follow-ups below).
+- **Tool names:** anything not named `<plugin>_...` is refused, so a plugin
+  can neither collide with another nor stand in for a core tool.
+- **Session:** loaded plugins and their mode are saved in `session.json`
+  beside the granted folders, and `/resume` loads them again.
+
+## Loading and trust
+
+- From `<install dir>/plugins/` only: not PATH, not the working directory,
+  not the project.
+- The MSI is per-user, so that directory is writable by the user and by
+  anything running as them. Check the Authenticode signature
+  (WinVerifyTrust, against our signing certificate) before `LoadLibrary`;
+  plugins are signed in the same Jenkins job with the same eToken as the MSI.
+  On Linux the root-owned directory the .deb/.rpm installs to does the same
+  job.
+- Policy, after `allowed-providers`: `allowed-plugins = jira` and
+  `allow-user-plugins = 0`, in the ADMX template too. The MCP bridge, if it
+  ever exists, is closed by the same key.
+
+## /remove-plugin
+
+`FreeLibrary` is only safe once every interface pointer into the module is
+released. So, on `/remove-plugin`:
+
+1. hide its tools and rebuild tools and prompt;
+2. call `ITaptoPluginUnload::Shutdown` if the plugin has it;
+3. release every pointer the host holds;
+4. `FreeLibrary` only if `TaptoCanUnloadNow()` returns `OK`.
+
+A plugin without the second interface stays loaded with its tools hidden
+until exit, which is always safe.
+
+## Commands and config
+
+`/add-plugin <name> [ro|rw]`, `/list-plugins`, `/remove-plugin <name>`,
+worded like the folder commands. `plugins = jira:ro` in config for a project
+that always wants it.
+
+## One heap: `scom.dll` / `libscom.so`
+
+The allocator has to be one module's, or a string allocated in the plugin
+is freed on another CRT's heap: the class of bug the MinGW libcrypto
+`FILE*` crash was (see the libtapto port notes below). As in other systems
+built on sCom, `sComStringDup` / `sComStringFree` and the buffer functions
+live in one small shared library, `scom.dll` beside `tapto-code.exe`
+(`libscom.so`, rpath `$ORIGIN/..` from the plugins). A plugin in `plugins\`
+binds to the copy already loaded in the process, since Windows matches a
+loaded module by name.
+
+libtapto itself stays static. Its API is C++ (`std::string`,
+`nlohmann::json`), so as a DLL it would tie every program and plugin to one
+compiler, CRT and STL, and tapto-word builds with MinGW while tapto-code
+builds with MSVC. scom's API is C and is 83 lines (`cpr/common/com.cpp`): a
+plugin built with any compiler can call it, and it is the only shared code
+in the audit.
+
+## Vendoring `cpr/com.h` as `scom.h`
+
+In libtapto (`include/tapto/scom.h` plus the scom shared-library target), so
+tapto-code, tapto-jira and every plugin compile against one copy at one
+pinned tag. The header comment names the cpr commit it came from.
+
+- It is not self-contained: it uses `LONG`, `ULONG`, `SIZE_T`, `LPUCHAR` and
+  `C_API` from another cpr header. The copy needs a prelude with those,
+  matching cpr's exactly so the layouts agree.
+- Its macros are global: `#define OK 0`, `#define interface struct`, the
+  `ERR_*` names. Only `tapto/plugin.h` and the loader's .cpp include it,
+  never a header that `main.cpp` or `tools.cpp` reach by the usual route.
+
+## Order of work
+
+- [ ] libtapto: `scom.h` (vendored) and the scom shared library;
+      `tapto/plugin.h`; a test plugin built in-tree and a test that loads it,
+      calls it, and unloads it through both paths.
+- [ ] tapto-code: the loader (install-dir only, signature check), ro/rw
+      filtering, tool-name rule, secrets and config keys, the three commands,
+      the policy keys and ADMX, plugins in `session.json`.
+- [ ] `jira.dll`: tapto-jira's `jira.cpp` behind `ITaptoPlugin`, its read
+      tools ro and create/update/comment/transition rw.
+- [ ] Installer: `plugins\` and `scom.dll` in the MSI, the plugin signed in
+      the same job; plugins as their own feature or their own MSI, to decide.
+- [ ] Open: tapto-jira as a thin host around the same plugin, or retired.
+
+---
+
 # tapto-code: adopt libtapto
 
 The shared tapto code now lives in one place: `../tapto-word/libtapto`, cut on
