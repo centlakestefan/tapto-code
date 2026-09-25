@@ -9,6 +9,7 @@
 #include "tapto/prompt.h"
 #include "tapto/provider.h"
 #include "tapto/secret.h"
+#include "tapto/session.h"
 #include "tapto/tools.h"
 
 #include "tapto/claude.h"
@@ -63,7 +64,7 @@ const char* kUsage =
     "tapto-code - a small cross-platform CLI\n"
     "\n"
     "Usage:\n"
-    "  tapto-code [--provider <name>]                Start an interactive chat (default)\n"
+    "  tapto-code [--provider <name>] [--resume]     Start an interactive chat (default)\n"
     "  tapto-code [--system|--global|--local|--policy] config <command> [args]\n"
     "  tapto-code [--system|--global|--local|--policy] command <add|remove|list> ...\n"
     "\n"
@@ -119,6 +120,7 @@ const char* kUsage =
     "\n"
     "Options:\n"
     "  --provider <name>  chat with this provider instead of the configured default\n"
+    "  --resume           continue the conversation last held in this folder\n"
     "  --show-origin      with 'list', prefix each entry with its scope\n"
     "  -h, --help         show this help\n"
     "\n"
@@ -793,8 +795,9 @@ bool poll_esc() {
 }
 
 // `requested_provider` is the --provider argument, empty for the configured
-// default.
-int cmd_chat(const std::string& requested_provider) {
+// default. `resume` is --resume: continue the conversation saved for this
+// folder instead of starting a new one.
+int cmd_chat(const std::string& requested_provider, bool resume) {
     if (auto tf = get_effective("trace-file")) {
         mclog_set_file(*tf);
         // First line of every trace: which build wrote what follows. The file
@@ -947,6 +950,108 @@ int cmd_chat(const std::string& requested_provider) {
     // The resolved provider is printed, so a block wired to the wrong dialect or
     // URL shows up here rather than as malformed requests.
     ui::print_banner(TAPTO_CODE_VERSION, provider_label(*provider), model, url);
+
+    // The conversation is saved after every turn, beside the folder's local
+    // config, so a chat ended by accident (Ctrl-C, a closed window) can be
+    // continued with --resume or /resume.
+    //
+    // `saved` is the conversation /resume brings back: the one on disk when
+    // this session started, or the one /clear set aside. /resume swaps it with
+    // the current one, so neither is lost and a second /resume goes back. The
+    // file only follows the current conversation, from its next turn on.
+    const std::filesystem::path session_file = session_path();
+    std::optional<SavedSession> saved;
+    {
+        std::string err;
+        saved = load_session(session_file, err);
+        if (!err.empty()) ui::print_warning("saved conversation ignored: " + err);
+        if (saved && saved->history.empty() && saved->pending_prompt.empty()) saved.reset();
+    }
+    bool save_warned = false;
+    // `pending` is a prompt whose turn is under way: the history does not hold
+    // it yet, so it is saved beside it and shown again on resume.
+    // The current conversation, as it would be saved. `saved_at` stays empty:
+    // save_session stamps what it writes, and one kept in memory is simply
+    // "the previous conversation".
+    auto snapshot = [&](const std::string& pending = std::string()) {
+        SavedSession s;
+        s.provider = provider->name;
+        s.dialect = provider->dialect;
+        s.model = model;
+        for (const auto& f : folders.folders()) {
+            if (!f.home) s.folders.push_back({f.root.string(), f.writable});
+        }
+        s.pending_prompt = pending;
+        s.history = client->getHistory();
+        return s;
+    };
+    auto persist = [&](const std::string& pending = std::string()) {
+        const std::string err = save_session(session_file, snapshot(pending));
+        // Once is enough: the same failure would repeat on every turn.
+        if (!err.empty() && !save_warned) {
+            ui::print_warning("conversation not saved: " + err);
+            save_warned = true;
+        }
+    };
+    auto message_count = [](const nlohmann::json& history) {
+        return std::to_string(history.size()) + (history.size() == 1 ? " message" : " messages");
+    };
+    auto resume_saved = [&]() {
+        if (!saved) {
+            ui::print_line(client->hasHistory() ? "(no other conversation to switch to)"
+                                                : "(no saved conversation for this folder)");
+            return;
+        }
+        // The history is in the wire format of the dialect that wrote it.
+        if (saved->dialect != provider->dialect) {
+            ui::print_error("the saved conversation was held with '" + saved->provider +
+                            "', which speaks " + saved->dialect + "; '" + provider->name +
+                            "' speaks " + provider->dialect +
+                            ". Start with --provider " + saved->provider + " to resume it.");
+            return;
+        }
+        for (const auto& g : saved->folders) {
+            std::string label;
+            const std::string err = folders.add(g.path, &label, g.writable);
+            if (!err.empty()) {
+                ui::print_warning("folder not granted again: " + g.path + ": " + err);
+                continue;
+            }
+            // A folder granted already keeps its mode on add; widen it to the
+            // saved one, never narrow what the user has granted since.
+            if (g.writable) folders.set_writable(label, true);
+        }
+        rebuild_tools_and_prompt();
+        // The conversation being replaced is set aside, not dropped: a second
+        // /resume brings it back.
+        std::optional<SavedSession> previous;
+        if (client->hasHistory()) previous = snapshot();
+        SavedSession next = std::move(*saved);
+        saved = std::move(previous);
+
+        client->start(); // resets the token accounting along with the history
+        client->loadHistory(next.history);
+        std::string msg = next.saved_at.empty()
+            ? "(back to the previous conversation: " + message_count(next.history)
+            : "(resumed the conversation saved " + next.saved_at + ": " +
+                  message_count(next.history);
+        if (next.model != model) msg += ", held with " + next.model;
+        if (saved) msg += "; /resume again to switch back";
+        msg += ")";
+        ui::print_line(msg);
+        if (folders.has_grants()) ui::print_line(list_folders_text(folders));
+        if (!next.pending_prompt.empty()) {
+            ui::print_line("\x1b[33mThe last prompt had not been answered when the session "
+                           "ended:\x1b[0m\n" + next.pending_prompt);
+        }
+        persist();
+    };
+    if (resume) {
+        resume_saved();
+    } else if (saved) {
+        ui::print_line("(a conversation from " + saved->saved_at + " is saved for this folder, " +
+                       message_count(saved->history) + "; /resume continues it)");
+    }
 #ifndef _WIN32
     // POSIX terminals deliver multi-line pastes via bracketed-paste markers.
     // On Windows read_user_input() coalesces pastes at the console API level, so
@@ -964,9 +1069,16 @@ int cmd_chat(const std::string& requested_provider) {
         if (line.empty()) continue;
 
         // Reset the conversation (e.g. to recover after filling the context window).
+        // The cleared conversation is kept for /resume, and stays in the file
+        // until the next turn replaces it, so --resume undoes a /clear too.
         if (line == "/clear") {
+            if (!client->hasHistory()) {
+                ui::print_line("(conversation cleared)");
+                continue;
+            }
+            saved = snapshot();
             client->start();
-            ui::print_line("(conversation cleared)");
+            ui::print_line("(conversation cleared; /resume brings it back)");
             continue;
         }
 
@@ -1169,6 +1281,7 @@ int cmd_chat(const std::string& requested_provider) {
                 }
             }
             client->beginWithSummary(summary);
+            persist();
             mclog("[/compact] reseeded the conversation with a " + std::to_string(summary.size()) + "-byte summary\n");
             ui::print_line("(conversation compacted)");
             continue;
@@ -1185,6 +1298,10 @@ int cmd_chat(const std::string& requested_provider) {
                     ui::print_command_entry(level_name(e.origin), e.name, e.command);
                 }
             }
+            continue;
+        }
+        if (line == "/resume") {
+            resume_saved();
             continue;
         }
         if (line == "/help") {
@@ -1220,6 +1337,8 @@ int cmd_chat(const std::string& requested_provider) {
                 << "  " << (in_tokens == 0
                           ? std::string("— (no request yet)")
                           : std::to_string(in_tokens) + " input tokens") << "\n"
+                << "\x1b[1m"  << "  Saved to"    << "\x1b[0m"
+                << "  " << session_file.string() << "\n"
                 << "\x1b[1m"  << "  Max tool it." << "\x1b[0m"
                 << "  " << ai_config.maxToolIterations() << "\n"
                 << "\x1b[1m"  << "  Version"     << "\x1b[0m"
@@ -1365,6 +1484,10 @@ int cmd_chat(const std::string& requested_provider) {
         cancel_token.reset(); // reset for this turn
         context.cancel = &cancel_token;
 
+        // Saved before the call so a session killed mid-turn still has the
+        // prompt, and after it with the turn in the history.
+        persist(line);
+
         {
             // Raw/unbuffered stdin for the duration of the call so poll_esc()
             // can read a single ESC byte without waiting for Enter (POSIX).
@@ -1385,6 +1508,7 @@ int cmd_chat(const std::string& requested_provider) {
                 }
             }
         }
+        persist();
     }
 #ifndef _WIN32
     std::cout << "\x1b[?2004l" << std::flush; // disable bracketed paste on exit
@@ -1421,6 +1545,7 @@ int main(int argc, char** argv) {
     Args a;
     std::vector<std::string> rest;
     std::string provider; // --provider <name>, empty for the configured default
+    bool resume = false;  // --resume
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -1438,15 +1563,20 @@ int main(int argc, char** argv) {
             provider = argv[++i];
         }
         else if (arg.rfind("--provider=", 0) == 0) provider = arg.substr(11);
+        else if (arg == "--resume") resume = true;
         else rest.push_back(std::move(arg));
     }
 
     // No subcommand: start a chat (it's the default action).
     if (rest.empty()) {
-        return cmd_chat(provider);
+        return cmd_chat(provider, resume);
     }
     if (!provider.empty()) {
         ui::print_error("--provider only applies to chat");
+        return 2;
+    }
+    if (resume) {
+        ui::print_error("--resume only applies to chat");
         return 2;
     }
     const std::string& top = rest[0];

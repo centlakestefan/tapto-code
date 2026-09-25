@@ -191,8 +191,27 @@ reply, and repeats. Type `/exit` (or Ctrl-D) to quit.
 
 In-session slash commands: `/clear` (reset the conversation — useful to recover
 after filling the model's context window), `/compact`, `/env`,
-`/list-commands`, `/add-command <name> <command...>`, and the folder commands
-below.
+`/list-commands`, `/add-command <name> <command...>`, `/resume`, and the folder
+commands below.
+
+**Resuming a conversation.** After every turn the conversation is saved to
+`session.json` beside the folder's local config (under `~/.tapto/projects`,
+never in the project; `/env` shows the path). If a chat ends by accident —
+Ctrl-C, a closed window — start `tapto-code --resume` in the same folder, or
+type `/resume`, to continue it (if you already started typing, `/resume` still
+brings back the conversation that was saved when the session started). The folders granted with
+`/add-folder` come back with it, and a prompt that was still being answered is
+printed so you can send it again; the work the model did on that last turn is
+in your files but not in the conversation. A new conversation replaces the
+saved one with its first turn.
+
+`/resume` also undoes `/clear`: the cleared conversation is set aside, and
+stays on disk until your next turn, so `--resume` brings it back too. When a
+conversation is already under way, `/resume` sets that one aside instead of
+dropping it, and a second `/resume` switches back. The history is in the
+provider's own format, so it resumes only with a provider of the same type
+(claude, openai or gemini). The file holds whatever the model read, as the
+trace file does.
 
 **Reading beyond the working directory.** The file tools are confined to the
 directory tapto-code was started in. To let the model read something else — a

@@ -788,7 +788,7 @@ void print_banner(const std::string& version,
 
     // Hints
     std::cout << kDim
-              << "  ESC to interrupt  │  /clear  /compact  /cot on|off  /env  /add-folder <path> [rw]  /add-command <name> <cmd>  /list-commands  /help  /exit"
+              << "  ESC to interrupt  │  /clear  /compact  /resume  /cot on|off  /env  /add-folder <path> [rw]  /add-command <name> <cmd>  /list-commands  /help  /exit"
               << kReset << "\n\n";
 }
 
@@ -805,7 +805,7 @@ void print_chat_header(const std::string& provider,
 }
 
 void print_chat_hints() {
-    std::cout << "Slash commands: /clear, /compact, /add-folder <path> [rw], /list-commands, "
+    std::cout << "Slash commands: /clear, /compact, /resume, /add-folder <path> [rw], /list-commands, "
                  "/add-command <name> <command...>, /exit\n";
 }
 
@@ -814,6 +814,7 @@ void print_help(const std::vector<std::string>& tool_names) {
               << kBold << "  Slash commands\n" << kReset
               << "    /clear                        clear conversation history\n"
               << "    /compact [focus]              summarize and restart from the summary\n"
+              << "    /resume                       continue the saved conversation, or undo /clear\n"
               << "    /cot on|off                   show / set chain-of-thought output (on|off)\n"
               << "    /effort [value|off]           show / set OpenAI reasoning-effort (low|medium|high|...)\n"
               << "    /env                          show session environment (directory, model, history)\n"

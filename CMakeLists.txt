@@ -77,6 +77,7 @@ add_executable(tapto-code
   src/main.cpp
   src/commands.cpp
   src/prompt.cpp
+  src/session.cpp
   src/tools.cpp
   src/ui.cpp
 )
@@ -137,3 +138,15 @@ target_link_libraries(test-prompt PRIVATE tapto::tapto)
 tapto_code_warnings(test-prompt)
 
 add_test(NAME prompt COMMAND test-prompt)
+
+# The saved conversation behind --resume: what a save writes reads back the
+# same, and a damaged or foreign file is refused rather than half-loaded.
+add_executable(test-session
+  tests/test_session.cpp
+  src/session.cpp
+)
+target_include_directories(test-session PRIVATE include)
+target_link_libraries(test-session PRIVATE tapto::tapto)
+tapto_code_warnings(test-session)
+
+add_test(NAME session COMMAND test-session)

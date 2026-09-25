@@ -62,6 +62,11 @@ breaking changes and the patch number everything else.)
 - `system-prompt-file` sets the system prompt from a text file, so it can run
   to several lines; `system-prompt-append` and `system-prompt-append-file` add
   your own instructions after the built-in prompt instead of replacing it.
+- A chat ended by accident (Ctrl-C, a closed window) can be picked up again:
+  start `tapto-code --resume`, or type `/resume`, to continue the last
+  conversation held in that folder, with its granted folders. A prompt that was
+  still being answered is shown so you can send it again. `/resume` also
+  undoes `/clear`.
 
 ### Fixed
 
