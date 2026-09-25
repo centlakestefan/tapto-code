@@ -160,12 +160,36 @@ In libtapto (`include/tapto/scom.h` plus the scom shared-library target), so
 tapto-code, tapto-jira and every plugin compile against one copy at one
 pinned tag. The header comment names the cpr commit it came from.
 
-- It is not self-contained: it uses `LONG`, `ULONG`, `SIZE_T`, `LPUCHAR` and
-  `C_API` from another cpr header. The copy needs a prelude with those,
-  matching cpr's exactly so the layouts agree.
-- Its macros are global: `#define OK 0`, `#define interface struct`, the
-  `ERR_*` names. Only `tapto/plugin.h` and the loader's .cpp include it,
-  never a header that `main.cpp` or `tools.cpp` reach by the usual route.
+It is cleaned up on the way in, keeping the binary layout cpr's modules
+have:
+
+- **Types from `<cstdint>`,** in place of the ones cpr's `_ede_types.h`
+  supplies (which `com.h` uses without including). cpr already makes them
+  fixed-width on both platforms, so nothing moves:
+
+  | cpr | Windows | Linux | vendored |
+  |---|---|---|---|
+  | `LONG` (`SRESULT`) | `long`, 32-bit | `int32_t` | `int32_t` |
+  | `ULONG` (`AddRef`/`Release`, `GUID::Data1`) | `unsigned long`, 32-bit | `uint32_t` | `uint32_t` |
+  | `USHORT` / `UCHAR` | 16 / 8-bit | 16 / 8-bit | `uint16_t` / `uint8_t` |
+  | `SIZE_T` | `ULONG_PTR` | `C_SIZE` | `size_t` |
+  | `LPUCHAR` | `unsigned char*` | `unsigned char*` | `uint8_t*` |
+
+  The GUID stays 16 bytes and the vtables stay as they are, so an object
+  built against cpr's `com.h` can still be handed to the vendored one.
+- **`C_API` becomes `SCOM_CALL`:** `__stdcall` on Windows, empty elsewhere,
+  as cpr has it. It only changes code on 32-bit x86 (x64 has one calling
+  convention and ignores it); it is kept so a win32 build would still match
+  cpr's modules.
+- **Status codes as `constexpr SRESULT`** in the header's namespace instead
+  of `#define OK 0` and the `ERR_*` macros. Same values, so the ABI does not
+  change, and the header no longer defines `OK` for every file that
+  includes it. `interface` stays a keyword-like macro only if nothing
+  better reads as well; `struct` is what it expands to anyway.
+- **Only what the plugin system uses:** IBase, GUID and `DEFINE_IID`, the
+  interface-map macros, `sComPtr`/`sComQIPtr`, the string and buffer
+  functions. The IPC error codes and typeinfo that belong to clcom's larger
+  design stay behind.
 
 ## Order of work
 
