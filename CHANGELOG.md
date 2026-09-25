@@ -46,27 +46,24 @@ breaking changes and the patch number everything else.)
 
 ## [Unreleased]
 
+## [1.0.4] — 2026-09-25
+
 ### Security
 
-- A repository's git directory is now protected by what it holds rather than
-  by being called `.git`, so a linked worktree, a repository created with
-  `--separate-git-dir` and a bare repository in the tree are covered too, as
-  is a `.git` that is a symbolic link. Allow-listed commands are held to the
-  same rule: neither the folder a command runs in nor a path argument you
-  declared as a path (`%p1`, `%p*`) can be inside a git directory. A plain
-  `%1` is still passed through as you wrote the command. Reading any of it
-  still works.
+- The model could change a repository's git files when they were not in a
+  folder named `.git` (a linked worktree, a bare repository, or a repository
+  made with `--separate-git-dir`). Now it can only read them there too, and
+  your allow-listed commands can neither run in them nor be handed a `%p1` or
+  `%p*` path inside them.
 
 ### Added
 
 - `system-prompt-file` sets the system prompt from a text file, so it can run
   to several lines; `system-prompt-append` and `system-prompt-append-file` add
   your own instructions after the built-in prompt instead of replacing it.
-- A chat ended by accident (Ctrl-C, a closed window) can be picked up again:
-  start `tapto-code --resume`, or type `/resume`, to continue the last
-  conversation held in that folder, with its granted folders. A prompt that was
-  still being answered is shown so you can send it again. `/resume` also
-  undoes `/clear`.
+- If a chat ends by accident, with Ctrl-C or a closed window, start
+  `tapto-code --resume` or type `/resume` in the same folder to carry on where
+  you left off. `/resume` also undoes `/clear`.
 
 ### Fixed
 
@@ -299,7 +296,8 @@ provider's name when `provider` is absent.
 Initial release: an agent that reads, writes and runs code in a sandboxed
 project directory, against Claude, OpenAI or Gemini. ([d9ac02c])
 
-[Unreleased]: https://github.com/centlakestefan/tapto-code/compare/v1.0.3...HEAD
+[Unreleased]: https://github.com/centlakestefan/tapto-code/compare/v1.0.4...HEAD
+[1.0.4]: https://github.com/centlakestefan/tapto-code/compare/v1.0.3...v1.0.4
 [1.0.3]: https://github.com/centlakestefan/tapto-code/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/centlakestefan/tapto-code/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/centlakestefan/tapto-code/compare/v1.0.0...v1.0.1
