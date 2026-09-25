@@ -851,6 +851,19 @@ int cmd_chat(const std::string& requested_provider, bool resume) {
     // ai_config is declared before client so it outlives the client, which
     // holds a pointer to it.
     AiConfig ai_config;
+    // Every request names the program, version and build, so a proxy in front
+    // of the provider (LiteLLM, a gateway) can see who is calling and turn
+    // away a version that is too old; its refusal is shown as the error.
+    ai_config.setUserAgent(std::string("tapto-code/") + TAPTO_CODE_VERSION + " (" +
+                           TAPTO_CODE_COMMIT + "; " +
+#ifdef _WIN32
+                           "windows"
+#elif defined(__APPLE__)
+                           "macos"
+#else
+                           "linux"
+#endif
+                           ")");
     if (auto v = get_effective("max-output-tokens")) {
         try {
             ai_config.setMaxOutputTokens(std::stoi(*v));

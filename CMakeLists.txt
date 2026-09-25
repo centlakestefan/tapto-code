@@ -30,7 +30,7 @@ endif()
 # on MSVC, so a warning it trips here is fixed in the library and released.
 set(LIBTAPTO_BUILD_TESTS ON CACHE BOOL "" FORCE)
 include(FetchContent)
-set(LIBTAPTO_TAG "v0.1.0" CACHE STRING "libtapto version to build against")
+set(LIBTAPTO_TAG "v0.2.0" CACHE STRING "libtapto version to build against")
 FetchContent_Declare(libtapto
   GIT_REPOSITORY https://github.com/centlakestefan/libtapto.git
   GIT_TAG        ${LIBTAPTO_TAG}

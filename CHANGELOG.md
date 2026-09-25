@@ -46,6 +46,12 @@ breaking changes and the patch number everything else.)
 
 ## [Unreleased]
 
+### Added
+
+- Requests now tell the server which tapto-code version sent them, so an
+  administrator whose requests go through a gateway can see who still runs an
+  old version, and can turn it away with a message asking them to update.
+
 ## [1.0.4] — 2026-09-25
 
 ### Security

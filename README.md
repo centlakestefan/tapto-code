@@ -175,6 +175,16 @@ every account in the domain. Set `work-api-key` to a reference instead
 the credential separately, or point `work-provider-url` at a gateway that
 authenticates the user.
 
+Every request tapto-code sends names it in the `User-Agent` header, as
+`tapto-code/<version> (<commit>; <os>)`, for example
+`tapto-code/1.0.5 (v1.0.5; windows)`. A gateway in front of the provider
+(LiteLLM, for one) can log it to see which versions are in use, or refuse a
+version that is too old: tapto-code shows the gateway's error message to the
+user, and does not retry a 4xx. Versions before 1.0.5 send no header of their
+own, so a rule that requires `tapto-code/` in the header turns those away too.
+The header is set by the client, so it tells you which version an honest client
+is running; it is not an access control.
+
 ```sh
 tapto-code --policy config list      # what the policy sets, and nothing else
 tapto-code config list --show-origin # policy entries are marked "policy"
