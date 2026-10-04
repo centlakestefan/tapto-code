@@ -647,6 +647,72 @@ int main() {
         fs::remove_all(fake_home, ec);
     }
 
+    // --- tapto-code's own folders are read-only to the model ----------------
+    // Started in the home folder, the working directory holds ~/.tapto, whose
+    // command stores would let the model allow-list anything and then run it.
+    // The fake home sits inside the working directory for exactly that case.
+    {
+        ToolExecutorFn run = find_run_command(ctx);
+        const fs::path fake_home = fs::absolute(test_path("home"));
+        const fs::path store = fake_home / ".tapto" / "commands";
+        fs::create_directories(fake_home / ".tapto", ec);
+        write_raw(store.string(), "say = echo hi\n");
+        const std::string home_var =
+#ifdef _WIN32
+            "USERPROFILE";
+#else
+            "HOME";
+#endif
+        const std::string saved = get_env(home_var);
+        set_env(home_var, fake_home.string());
+
+        std::string r = edit(ctx, json{{"command", "str_replace"}, {"path", store.string()},
+                                       {"old_str", "say = echo hi"},
+                                       {"new_str", "say = echo hi\nown = anything"}});
+        CHECK_TRUE(r.rfind("ERROR:", 0) == 0 && r.find("own folders") != std::string::npos);
+        CHECK_EQ(read_raw(store.string()), "say = echo hi\n");
+
+        r = edit(ctx, json{{"command", "create"},
+                           {"path", (fake_home / ".tapto" / "projects" / "x" / "commands").string()},
+                           {"file_text", "own = anything\n"}});
+        CHECK_TRUE(r.rfind("ERROR:", 0) == 0);
+        CHECK_TRUE(!fs::exists(fake_home / ".tapto" / "projects"));
+
+        // Any folder named .tapto, even one that doesn't exist yet.
+        r = edit(ctx, json{{"command", "create"}, {"path", test_path("other/.tapto/commands")},
+                           {"file_text", "own = anything\n"}});
+        CHECK_TRUE(r.rfind("ERROR:", 0) == 0);
+#ifdef _WIN32
+        r = edit(ctx, json{{"command", "create"}, {"path", test_path("other/.TAPTO/commands")},
+                           {"file_text", "own = anything\n"}});
+        CHECK_TRUE(r.rfind("ERROR:", 0) == 0);
+#endif
+        CHECK_TRUE(!fs::exists(test_path("other")));
+
+        // A command can't be pointed there either; a built-in may still read.
+        r = run(ctx, json{{"name", "say"}, {"cwd", (fake_home / ".tapto").string()}});
+        CHECK_TRUE(r.rfind("ERROR:", 0) == 0 && r.find("own folders") != std::string::npos);
+        r = run(ctx, json{{"name", "cat"}, {"args", {store.string()}}});
+        CHECK_EQ(r, "say = echo hi\n");
+
+        // A link to it under another name resolves to the real folder, which
+        // is refused as such. Skipped where links need a privilege.
+        fs::create_directory_symlink(fake_home / ".tapto", test_path("cfg"), ec);
+        if (!ec) {
+            r = edit(ctx, json{{"command", "create"}, {"path", test_path("cfg/commands2")},
+                               {"file_text", "own = anything\n"}});
+            CHECK_TRUE(r.rfind("ERROR:", 0) == 0);
+            CHECK_TRUE(!fs::exists(fake_home / ".tapto" / "commands2"));
+            fs::remove(test_path("cfg"), ec);
+        } else {
+            std::cout << "  (skipped: symlinks not permitted here)\n";
+        }
+        ec.clear();
+
+        set_env(home_var, saved);
+        fs::remove_all(fake_home, ec);
+    }
+
     // --- run_command `path` fallback ---------------------------------------
     // The model sometimes sends `{"name":"ls","path":"driver"}` instead of
     // `{"name":"ls","args":["driver"]}` (conflating with the text editor). The

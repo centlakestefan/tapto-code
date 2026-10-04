@@ -46,6 +46,13 @@ breaking changes and the patch number everything else.)
 
 ## [Unreleased]
 
+### Security
+
+- Started in your home folder, tapto-code let the model change its own
+  settings and command lists in `~/.tapto`, and so add a command and run it.
+  `~/.tapto` and any folder named `.tapto` are now read-only to the model, as
+  `.git` already was.
+
 ### Added
 
 - Requests now tell the server which tapto-code version sent them, so an

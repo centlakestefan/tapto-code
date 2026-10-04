@@ -442,9 +442,14 @@ execution. The rule is not the name `.git`: a directory holding `HEAD`,
 `objects/` and `refs/` is one, whatever it is called, which covers a linked
 worktree, `git init --separate-git-dir`, and a bare repo sitting in the tree.
 A symlinked `.git` is caught as written, before the link is resolved. Reading
-any of it is still allowed. The same rule applies to `run_command`: a
-command's `cwd` and its `%p` path arguments are refused there too (the
-read-only built-ins may still be pointed at it).
+any of it is still allowed. tapto-code's own folders are read-only in the same
+way: `~/.tapto` (settings, every project's commands, saved conversations), and
+the machine-wide store, and any folder named `.tapto`. That
+matters when tapto-code is started in your home folder, which contains
+`~/.tapto`: otherwise the model could add a command to your list and run it.
+The same rules apply to `run_command`: a command's `cwd` and its `%p` path
+arguments are refused there too (the read-only built-ins may still be pointed
+at them).
 
 **What the sandbox does not cover:** allow-listing a command that runs files
 from the tree — `make`, `npm run build`, `cmake`, a test runner — gives the

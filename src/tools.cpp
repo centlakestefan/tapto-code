@@ -11,6 +11,7 @@
 #include <cctype>
 #include <cstring>
 #include <cstdio>
+#include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -350,20 +351,87 @@ bool in_git_dir(const fs::path& resolved, const std::string& input) {
     return false;
 }
 
+// A path made canonical where it exists and tidied where it doesn't, so two
+// spellings of one folder compare equal.
+fs::path canonical_or_normal(const fs::path& p) {
+    std::error_code ec;
+    fs::path c = fs::weakly_canonical(p, ec);
+    return ec ? p.lexically_normal() : c;
+}
+
+// is_under with the filesystem's idea of case: on Windows a folder that does
+// not exist yet keeps the case it was written in, so ".TAPTO\commands" has to
+// match "...\.tapto" by name.
+bool is_within(const fs::path& root, const fs::path& path) {
+#ifdef _WIN32
+    auto lower = [](const fs::path& p) {
+        std::wstring s = p.wstring();
+        for (wchar_t& c : s) c = static_cast<wchar_t>(std::towlower(c));
+        return fs::path(s);
+    };
+    return is_under(lower(root), lower(path));
+#else
+    return is_under(root, path);
+#endif
+}
+
+// The folders tapto-code keeps its own state in: ~/.tapto (the global store,
+// every project's local store and command list, saved conversations) and the
+// machine-wide store. None of it is the model's to change, and a writable command store
+// is a way to run anything: the agent adds a command and runs it. That
+// matters as soon as the working directory contains them, which is what
+// starting tapto-code in the home folder (or at the root of a drive) does.
+std::vector<fs::path> tapto_dirs() {
+    std::vector<fs::path> dirs;
+    for (const fs::path& d : {global_dir(), config_path(Level::System).parent_path()}) {
+        if (!d.empty()) dirs.push_back(canonical_or_normal(d));
+    }
+    return dirs;
+}
+
+// True if writing to `resolved` would land in one of tapto_dirs(), or in any
+// folder named ".tapto". As with the git directory, the path is checked as
+// resolved and as written: a symlink or junction to ~/.tapto resolves to a
+// path with no ".tapto" left in its relative part, which the canonical
+// comparison catches, while a ".tapto" that does not exist yet is caught by
+// its name.
+bool in_tapto_dir(const fs::path& resolved, const std::string& input) {
+    const Folder* owner = granted_owner(resolved, /*writable_only=*/true);
+    const fs::path& root = owner ? owner->root : sandbox_root();
+    for (const auto& part : resolved.lexically_relative(root)) {
+        if (component_is(part, ".tapto")) return true;
+    }
+    for (const auto& part : fs::path(input).lexically_normal()) {
+        if (component_is(part, ".tapto")) return true;
+    }
+    for (const fs::path& dir : tapto_dirs()) {
+        if (is_within(dir, resolved)) return true;
+    }
+    return false;
+}
+
 // Refuse a path that a write must not touch. Shared by the editor and by
 // run_command, so a command cannot reach what the editor is refused.
-bool refuse_git_write(const fs::path& resolved, const std::string& input, std::string& error) {
-    if (!in_git_dir(resolved, input)) return false;
-    error = "ERROR: '" + input + "' is inside a repository's git directory, which "
-            "tapto-code never writes to. Use an allow-listed git command instead.";
-    return true;
+bool refuse_protected_write(const fs::path& resolved, const std::string& input, std::string& error) {
+    if (in_git_dir(resolved, input)) {
+        error = "ERROR: '" + input + "' is inside a repository's git directory, which "
+                "tapto-code never writes to. Use an allow-listed git command instead.";
+        return true;
+    }
+    if (in_tapto_dir(resolved, input)) {
+        error = "ERROR: '" + input + "' is inside tapto-code's own folders (its settings "
+                "and allow-listed commands), which tapto-code never writes to. "
+                "Only the user can change them.";
+        return true;
+    }
+    return false;
 }
 
 // Resolve a path the model wants to write to: sandboxed, and never in a git
-// directory.
+// directory or tapto-code's own folders.
 bool resolve_for_write(const std::string& input, fs::path& out, std::string& error) {
     if (!resolve_in_sandbox(input, out, error, fs::path(), Scope::Write)) return false;
-    return !refuse_git_write(out, input, error);
+    return !refuse_protected_write(out, input, error);
 }
 
 // --- text editor tool -----------------------------------------------------
@@ -894,7 +962,7 @@ bool build_argv(const std::string& tpl, const std::vector<std::string>& args,
         fs::path resolved;
         std::string perr;
         if (!resolve_in_sandbox(value, resolved, perr, base, Scope::Write)) { error = perr; return false; }
-        if (refuse_git_write(resolved, value, perr)) { error = perr; return false; }
+        if (refuse_protected_write(resolved, value, perr)) { error = perr; return false; }
         out = resolved.string();
         return true;
     };
@@ -1422,9 +1490,10 @@ std::string execute_run_command(Context& /*context*/, const json& in) {
             const bool builtin = is_builtin_command(name);
             const Scope scope = builtin ? Scope::Read : Scope::Write;
             if (!resolve_in_sandbox(raw, base, err, fs::path(), scope)) return err;
-            // A built-in only reads, so it may look inside a git directory; a
-            // shell command run there could write whatever it likes.
-            if (!builtin && refuse_git_write(base, raw, err)) return err;
+            // A built-in only reads, so it may look inside a git directory or
+            // tapto-code's own folders; a shell command run there could write
+            // whatever it likes.
+            if (!builtin && refuse_protected_write(base, raw, err)) return err;
             std::error_code ec;
             if (!fs::is_directory(base, ec)) {
                 return "ERROR: cwd '" + raw + "' is not an existing directory. "
