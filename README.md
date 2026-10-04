@@ -578,8 +578,24 @@ Scripts live in one of two folders, searched in this order, before `PATH`:
 
 | Folder | Default | Who writes it |
 | ------ | ------- | ------------- |
-| the machine's | `%ProgramFiles%\Centlake\tapto\scripts` (created by the installer), `/etc/tapto/scripts` elsewhere; policy `script-folder` moves it | administrators |
+| the machine's | `%ProgramFiles%\Centlake\tapto\scripts`, `/etc/tapto/scripts` elsewhere; policy `script-folder` moves it | administrators |
 | the user's | `~/.tapto/scripts` | the user; searched only while policy allows user commands |
+
+Nothing creates the machine's folder for you: tapto-code installs per user and
+cannot write under Program Files. Create it when you deploy the scripts, with
+whatever already deploys files to your machines: a Group Policy Preferences
+*Folders* and *Files* item, an Intune or SCCM script, or by hand:
+
+```powershell
+# elevated
+New-Item -ItemType Directory -Force "$env:ProgramFiles\Centlake\tapto\scripts"
+Copy-Item .\lint-all.cmd "$env:ProgramFiles\Centlake\tapto\scripts\"
+```
+
+A folder made under Program Files inherits its permissions (users may read and
+run, only administrators may change), which is exactly what tapto-code
+requires. A standard user cannot create it there either, so until you do, it
+simply does not exist and is skipped.
 
 The agent can never write to either folder, even when tapto-code is started in
 a folder that contains them. The machine's folder speaks for the organization,

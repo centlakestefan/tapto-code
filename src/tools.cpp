@@ -926,7 +926,8 @@ bool agent_could_plant(const fs::path& p) {
 // The machine's script folder speaks for the organization, so the user must
 // not be able to change it either: not the script (it would change what a
 // policy command does) and not the folder (a new script there would stand in
-// for a program on PATH). The MSI creates it writable by administrators only.
+// for a program on PATH). Administrators create it under Program Files, whose
+// inherited permissions give users read and execute only.
 bool machine_script_trusted(const fs::path& dir, const fs::path& file) {
     if (process_is_elevated()) return true;
     return !token_can_write(dir) && !token_can_write(file);

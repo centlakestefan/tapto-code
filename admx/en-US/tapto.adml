@@ -110,7 +110,7 @@ The folder and its scripts must be writable by administrators only. tapto-code c
 
 Enabled: the folder given here is used.
 
-Not configured: %ProgramFiles%\Centlake\tapto\scripts, which the installer creates.
+Not configured: %ProgramFiles%\Centlake\tapto\scripts. The tapto-code installer is per user and does not create it; create it when you deploy the scripts (for example with a Group Policy Preferences Folders and Files item). Made under Program Files, it inherits permissions that let users read and run but not change it.
 
 Writes the config key "script-folder".</string>
 

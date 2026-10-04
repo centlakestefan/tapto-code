@@ -34,10 +34,12 @@ shell syntax is refused and belongs in a script in the machine's
 user's (`~/.tapto/scripts`) script folder. `~/.tapto`, any `.tapto`, the
 machine store and the script folders are write-protected like `.git`.
 
-- [ ] tapto-code-install: the MSI creates `[ProgramFiles64Folder]Centlake\tapto\scripts`
-      with the inherited Program Files ACL (Users: read/execute only), so the
-      folder exists for administrators to fill. tapto-code refuses a script
-      there that the user can change.
+- No installer creates the machine's script folder: the MSI is per user and
+  cannot write under Program Files. Administrators create it when they deploy
+  the scripts (GPP Folders/Files, Intune, SCCM); under Program Files it
+  inherits Users: read/execute, which is what tapto-code checks for. Decided
+  4 Oct: Program Files stays the default (ProgramData lets users add files and
+  squat the folder). A per-machine `tapto-admin.msi` only if a customer asks.
 - [ ] Release notes / mail to administrators: allow-lists with pipes, `&&`,
       `dir`/`echo` stop working in 1.0.5; move them into `.cmd` scripts.
 - [ ] Follow-up, not 1.0.5: the agent can still edit what an allow-listed
