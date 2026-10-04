@@ -41,6 +41,13 @@ jobs:
       - name: Build
         run: cmake --build build --config Release
 
+      # The suites are what exercise the sandbox and the command launcher,
+      # whose Windows and POSIX halves share no code: a build that only
+      # compiles the half not run on the developer's machine has told us
+      # nothing about it.
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
       - name: Smoke test (Linux)
         if: runner.os == 'Linux'
         run: |

@@ -1146,16 +1146,6 @@ size_t parse_placeholder(const std::string& s, size_t i, bool& is_path, bool& is
     return 0;
 }
 
-bool template_has_placeholder(const std::string& tpl) {
-    for (size_t i = 0; i < tpl.size(); ++i) {
-        if (tpl[i] != '%') continue;
-        bool p, star;
-        int idx;
-        if (parse_placeholder(tpl, i, p, star, idx) > 0) return true;
-    }
-    return false;
-}
-
 // Expand a template into an argv vector. The template's whitespace defines the
 // argv boundaries; %n / %pn are replaced with model-supplied values as *literal*
 // argv elements (never re-split), so no shell quoting is involved. The 'p'
