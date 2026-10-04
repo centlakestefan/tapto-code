@@ -23,6 +23,30 @@ README policy section, `[Unreleased]` entry).
 - [ ] Release 1.0.5 as 1.0.4 was: CMakeLists version, `[1.0.5]` section with
       date and compare links, tag, then the pin in tapto-code-install.
 
+## Also in 1.0.5: commands without a shell, `.tapto` read-only
+
+A user's allow-listed `nmake` ran a `nmake.bat` the model wrote into the
+project (cmd.exe searches the current directory first). Now: the program is
+looked up by tapto-code (script folders, then PATH, skipping folders the agent
+can write to) and started by absolute path; no command goes through a shell;
+shell syntax is refused and belongs in a script in the machine's
+(`%ProgramFiles%\Centlake\tapto\scripts`, policy `script-folder`) or the
+user's (`~/.tapto/scripts`) script folder. `~/.tapto`, any `.tapto`, the
+machine store and the script folders are write-protected like `.git`.
+
+- [ ] tapto-code-install: the MSI creates `[ProgramFiles64Folder]Centlake\tapto\scripts`
+      with the inherited Program Files ACL (Users: read/execute only), so the
+      folder exists for administrators to fill. tapto-code refuses a script
+      there that the user can change.
+- [ ] Release notes / mail to administrators: allow-lists with pipes, `&&`,
+      `dir`/`echo` stop working in 1.0.5; move them into `.cmd` scripts.
+- [ ] Follow-up, not 1.0.5: the agent can still edit what an allow-listed
+      build reads (Makefile, CMakeLists.txt, package.json scripts). Idea: a
+      per-command list of build-input globs, and a confirmation before the
+      command runs when the agent changed one since the last confirmed run.
+- [ ] Follow-up, maybe: refuse *reading* plain-text API keys in `~/.tapto/config`
+      (reads of `.tapto` are allowed, like `.git`).
+
 ---
 
 # 1.1.0: plugins

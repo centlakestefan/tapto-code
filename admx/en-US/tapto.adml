@@ -86,6 +86,8 @@ Writes the config keys max-output-tokens, max-tool-iterations, connection-timeou
 
 The command line may carry placeholders the agent fills in: %1, %2, ... and %* for values, %p1 for a path confined to the project tree. Run "tapto-code --help" and see the README's Commands section for the rules.
 
+A command line is run as a program and its arguments, never through a shell. Pipes, redirection, "&amp;&amp;" and cmd.exe built-ins (dir, echo, copy) are refused; put such a command line in a .cmd script in the script folder (see "Script folder") and allow-list the script's name, for example "lint" and "lint-all.cmd". A program named without a path is looked up in the script folder and then on PATH, skipping every folder the agent can write to.
+
 Enabled: these commands are available in every project and are listed with the scope "policy". A name set here cannot be redefined by the user; other names may still be added by the user unless "Allow user-defined commands" is disabled.
 
 Not configured: no commands are provided by policy.
@@ -100,6 +102,17 @@ Disabled: only the commands set under "Allow-listed commands" (and the read-only
 Enabled or Not configured: users may allow-list commands of their own.
 
 Writes the config key "allow-user-commands".</string>
+
+      <string id="ScriptFolder">Script folder</string>
+      <string id="ScriptFolder_Explain">The folder holding the scripts (.cmd or .bat) that allow-listed commands may name. A command line that needs a shell (a pipe, a redirection, "&amp;&amp;", a cmd.exe built-in) has to live in a script here, since commands are never run through a shell themselves. The folder is searched before PATH.
+
+The folder and its scripts must be writable by administrators only. tapto-code checks this every time it runs a script from here and refuses one the user could change, unless tapto-code itself runs elevated. The agent can never write here, even when tapto-code is started in a folder that contains it.
+
+Enabled: the folder given here is used.
+
+Not configured: %ProgramFiles%\Centlake\tapto\scripts, which the installer creates.
+
+Writes the config key "script-folder".</string>
 
       <string id="AdditionalSettings">Additional settings</string>
       <string id="AdditionalSettings_Explain">Any other configuration key the programs read, as name and value pairs, for keys this template has no dedicated setting for: trace-file, system-prompt, system-prompt-file (an absolute path), system-prompt-append, system-prompt-append-file (a system prompt set here is not added to by the user's own append keys; set the append keys here to add rules while leaving the prompt to the user), print-cot, or a second provider block (review-provider-type, review-provider-url, review-model, review-api-key).
@@ -137,6 +150,10 @@ Never put an API key value here; see "Work provider" for the references to use i
 
       <presentation id="AllowListedCommands">
         <listBox refId="AllowListedCommands_List">Commands (name = the command's name, value = its command line):</listBox>
+      </presentation>
+
+      <presentation id="ScriptFolder">
+        <textBox refId="ScriptFolder_Path"><label>Folder (an absolute path):</label></textBox>
       </presentation>
 
       <presentation id="AdditionalSettings">

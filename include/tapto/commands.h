@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <filesystem>
 #include <map>
 #include <string>
 #include <vector>
@@ -34,6 +35,23 @@ std::vector<CommandEntry> commands_in_scope(Level level);
 // Why the user may not define a command named `name`, or "" when they may:
 // policy defines that name, or policy allows no user commands at all.
 std::string command_policy_refusal(const std::string& name);
+
+// Why `cmdline` cannot be a command, or "" when it can. Commands are run as a
+// program and its arguments, never through a shell, so a command line that
+// relies on one (a pipe, a redirection, `&&`) is refused here rather than run
+// with the operator handed to the program as an argument.
+std::string command_line_refusal(const std::string& cmdline);
+
+// The folders searched for a command's program before PATH, and the only
+// place a command line that needs a shell can live: as a script (.cmd/.bat on
+// Windows, a shell script elsewhere) that the command names.
+//
+// The machine's folder is the organization's: policy `script-folder`, else
+// %ProgramFiles%\Centlake\tapto\scripts (Windows) or /etc/tapto/scripts.
+// The user's is ~/.tapto/scripts, and is searched only while policy allows
+// the user commands of their own (policy_allows_user_commands()).
+std::filesystem::path machine_script_folder();
+std::filesystem::path user_script_folder();
 
 // Add or update a command in the given scope. Throws on I/O failure, and for
 // the read-only policy scope.

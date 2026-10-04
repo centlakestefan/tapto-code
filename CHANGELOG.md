@@ -48,10 +48,24 @@ breaking changes and the patch number everything else.)
 
 ### Security
 
+- An allow-listed command such as `nmake` could run a `nmake.bat` the model
+  had written into your project, instead of the real program. tapto-code now
+  finds the program itself, never in a folder the model can write to, and
+  says so when it skips one.
 - Started in your home folder, tapto-code let the model change its own
   settings and command lists in `~/.tapto`, and so add a command and run it.
-  `~/.tapto` and any folder named `.tapto` are now read-only to the model, as
-  `.git` already was.
+  `~/.tapto`, any folder named `.tapto` and the script folders are now
+  read-only to the model, as `.git` already was.
+
+### Changed
+
+- **Breaking:** commands are no longer run through a shell. A command line
+  with a pipe, a redirection, `&&` or a `cmd.exe` built-in (`dir`, `echo`)
+  is refused by `command add` and when it runs. Move it into a script in
+  `%ProgramFiles%\Centlake\tapto\scripts` (or, for your own commands,
+  `~/.tapto/scripts`) and allow-list the script's name instead. Your
+  administrator can move the machine's folder with the new *Script folder*
+  policy.
 
 ### Added
 

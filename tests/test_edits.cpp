@@ -713,6 +713,70 @@ int main() {
         fs::remove_all(fake_home, ec);
     }
 
+    // --- a command runs the program it names, never one the model planted ---
+    // The incident: an allow-listed `nmake` ran the nmake.bat the model had
+    // written into the working directory, because cmd.exe (and CreateProcess)
+    // look there before PATH. A command that needs a shell names a script in
+    // a script folder instead.
+    {
+        ToolExecutorFn run = find_run_command(ctx);
+        const fs::path fake_home = fs::absolute(test_path("home"));
+        const fs::path scripts = fake_home / ".tapto" / "scripts";
+        fs::create_directories(scripts, ec);
+#ifdef _WIN32
+        const std::string home_var = "USERPROFILE";
+        const char path_sep = ';';
+        write_raw(test_path("tapto-planted.bat"), "@echo PLANTED\r\n");
+        write_raw((scripts / "hello-script.cmd").string(), "@echo hello %~1\r\n");
+        const std::string hello = "hello-script %1";
+#else
+        const std::string home_var = "HOME";
+        const char path_sep = ':';
+        write_raw(test_path("tapto-planted"), "#!/bin/sh\necho PLANTED\n");
+        fs::permissions(test_path("tapto-planted"), fs::perms::owner_all, ec);
+        // Without the execute bit, so it runs through /bin/sh.
+        write_raw((scripts / "hello-script.sh").string(), "echo hello \"$1\"\n");
+        const std::string hello = "hello-script.sh %1";
+#endif
+        write_raw((fake_home / ".tapto" / "commands").string(),
+                  "planted = tapto-planted\nhello = " + hello +
+                      "\npiped = tapto-planted | sort\n");
+        const std::string saved_home = get_env(home_var);
+        set_env(home_var, fake_home.string());
+
+        // In the working directory: not found, and never run.
+        std::string r = run(ctx, json{{"name", "planted"}, {"cwd", kDir}});
+        CHECK_TRUE(r.rfind("ERROR:", 0) == 0 && r.find("not found") != std::string::npos);
+        CHECK_TRUE(r.find("PLANTED\n") == std::string::npos);
+
+        // On PATH, in a folder the model can write to: skipped, and said so.
+        const std::string saved_path = get_env("PATH");
+        set_env("PATH", fs::absolute(kDir).string() + path_sep + saved_path);
+        r = run(ctx, json{{"name", "planted"}});
+        CHECK_TRUE(r.rfind("ERROR:", 0) == 0 && r.find("was ignored") != std::string::npos);
+        CHECK_TRUE(r.find("PLANTED\n") == std::string::npos);
+        set_env("PATH", saved_path);
+
+        // A script in the user's script folder runs, with its argument.
+        r = run(ctx, json{{"name", "hello"}, {"args", {"big world"}}});
+        CHECK_TRUE(r.find("hello big world") != std::string::npos);
+        CHECK_TRUE(r.find("[exit code: 0]") != std::string::npos);
+#ifdef _WIN32
+        // cmd.exe would interpret this value, so it never gets there.
+        r = run(ctx, json{{"name", "hello"}, {"args", {"x & echo PLANTED"}}});
+        CHECK_TRUE(r.rfind("ERROR:", 0) == 0 && r.find("batch script") != std::string::npos);
+#endif
+
+        // Shell syntax in a command is refused, not handed to a shell.
+        r = run(ctx, json{{"name", "piped"}});
+        CHECK_TRUE(r.rfind("ERROR:", 0) == 0 && r.find("shell syntax") != std::string::npos);
+
+        set_env(home_var, saved_home);
+        fs::remove_all(fake_home, ec);
+        fs::remove(test_path("tapto-planted.bat"), ec);
+        fs::remove(test_path("tapto-planted"), ec);
+    }
+
     // --- run_command `path` fallback ---------------------------------------
     // The model sometimes sends `{"name":"ls","path":"driver"}` instead of
     // `{"name":"ls","args":["driver"]}` (conflating with the text editor). The

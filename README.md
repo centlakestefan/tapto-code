@@ -144,15 +144,16 @@ Copy them into `%SystemRoot%\PolicyDefinitions` (or the domain's Central
 Store) and the settings appear under *Administrative Templates > Centlake >
 tapto*; Intune takes the same files through ADMX ingestion. The template covers
 the default provider, a `work` provider block, request limits, the
-restrictions below, the command allow-list, and a free-form name/value list for
+restrictions below, the command allow-list and script folder, and a free-form name/value list for
 every other key.
 
-Three keys exist only as policy:
+Four keys exist only as policy:
 
 ```
 allowed-providers = work, review    # the only names --provider or `provider =` may use
 allow-user-providers = 0            # only blocks the policy itself defines are usable
 allow-user-commands = 0             # only commands the policy defines may be run or added
+script-folder = D:\Tools\tapto     # the machine's script folder (an absolute path)
 ```
 
 Confinement holds only when the policy also fixes where a permitted block
@@ -167,7 +168,11 @@ command line; elsewhere the file `/etc/tapto/policy-commands`, in the same
 format as a commands store. They merge above the user's own commands, so a name
 the policy defines cannot be redefined, and `command list` shows them with the
 scope `policy`. With `allow-user-commands = 0` they are the only commands the
-agent can run, apart from the built-ins.
+agent can run, apart from the built-ins. Commands are never run through a
+shell, so a command line that needs one goes into a script in the machine's
+script folder (`%ProgramFiles%\Centlake\tapto\scripts` unless
+`script-folder` names another), which must be writable by administrators only;
+see [Scripts](#scripts).
 
 **Never put an API key in a policy**: Group Policy objects are readable by
 every account in the domain. Set `work-api-key` to a reference instead
@@ -443,8 +448,8 @@ execution. The rule is not the name `.git`: a directory holding `HEAD`,
 worktree, `git init --separate-git-dir`, and a bare repo sitting in the tree.
 A symlinked `.git` is caught as written, before the link is resolved. Reading
 any of it is still allowed. tapto-code's own folders are read-only in the same
-way: `~/.tapto` (settings, every project's commands, saved conversations), and
-the machine-wide store, and any folder named `.tapto`. That
+way: `~/.tapto` (settings, every project's commands, saved conversations), the
+machine-wide store, the script folders, and any folder named `.tapto`. That
 matters when tapto-code is started in your home folder, which contains
 `~/.tapto`: otherwise the model could add a command to your list and run it.
 The same rules apply to `run_command`: a command's `cwd` and its `%p` path
@@ -517,17 +522,72 @@ tapto-code command add commit git commit -m %1
 # agent calls run_command{ name: "commit", args: ["fix: handle empty input"] }
 ```
 
-Quoting is a non-issue by design: a command **with** placeholders bypasses the
-shell entirely and is executed as a literal argv vector, so an argument value
-can contain spaces, quotes, `&`, `|`, `%`, etc. and is passed through verbatim —
-nothing is re-interpreted by a shell. (A command **without** placeholders still
-runs through the shell, so it can use pipes and redirection.)
+Quoting is a non-issue by design: a command is never run through a shell. It
+is executed as a literal argv vector, so an argument value can contain spaces,
+quotes, `&`, `|`, `%`, etc. and is passed through verbatim; nothing is
+re-interpreted by a shell.
 
-On Windows, batch wrappers like `npm`, `npx`, and `yarn` are `.cmd` files that
-can't be launched directly; parameterized commands targeting them are run via
-`cmd.exe` automatically, so `npm %*` just works. Because `cmd.exe` re-parses
-that line, argument values containing `"`, `&`, `|`, `<`, `>`, `^`, `%` or a
-newline are refused for those commands rather than risk being interpreted.
+On Windows, batch wrappers like `npm`, `npx`, and `yarn` are `.cmd` files, and
+a `.cmd` or `.bat` only runs under `cmd.exe`, so tapto-code starts those through
+it. Because `cmd.exe` re-parses the line, argument values containing `"`, `&`,
+`|`, `<`, `>`, `^`, `%` or a newline are refused for those commands rather than
+risk being interpreted.
+
+### Which program a command runs
+
+A program named without a path (`nmake`, `git`, `lint-all.cmd`) is looked up
+in the [script folders](#scripts), then on `PATH`. The lookup skips every
+folder the agent can write to: the working folder and the folders granted
+read-write, wherever they appear on `PATH`. The current folder is never
+searched. Once found, the program is started by its full path. Without this,
+an allow-listed `nmake` could run a `nmake.bat` the agent had just written into
+the project, because Windows looks in the current folder first. On Windows a
+command may start `.exe`, `.com`, `.bat` and `.cmd` files. The programs a
+command starts in turn (a build tool's compiler, a script's tools) get the same
+`PATH` with those folders removed. On Windows they also get
+`NoDefaultCurrentDirectoryInExePath=1`, so `cmd.exe` stops searching the
+current folder too.
+
+A program named with a path (`build/tests`, `./configure`) is taken as written,
+relative to the command's `cwd`. That is a file in the project, which the agent
+can change, so it carries the same trust as allow-listing a build (see *What
+the sandbox does not cover* above).
+
+### Scripts
+
+A command line that needs a shell (a pipe, a redirection, `&&`, a `cmd.exe`
+built-in like `dir` or `echo`) cannot be a command. `command add` refuses it,
+and a command already stored that way is refused when it runs. Put the command
+line in a script instead, and allow-list the script by name:
+
+```bat
+:: C:\Program Files\Centlake\tapto\scripts\lint-all.cmd
+@echo off
+eslint . --format compact 2>&1 | findstr /v /c:"warning"
+```
+
+```sh
+tapto-code command add lint lint-all.cmd
+```
+
+A script runs in the command's `cwd` (the project), not in its own folder. It
+should reach files beside it through `%~dp0` (or `$(dirname "$0")`), never by a
+relative path, which would resolve inside the project.
+
+Scripts live in one of two folders, searched in this order, before `PATH`:
+
+| Folder | Default | Who writes it |
+| ------ | ------- | ------------- |
+| the machine's | `%ProgramFiles%\Centlake\tapto\scripts` (created by the installer), `/etc/tapto/scripts` elsewhere; policy `script-folder` moves it | administrators |
+| the user's | `~/.tapto/scripts` | the user; searched only while policy allows user commands |
+
+The agent can never write to either folder, even when tapto-code is started in
+a folder that contains them. The machine's folder speaks for the organization,
+so tapto-code also checks that the user cannot change it. A script there is
+refused if the folder or the script is writable by the account tapto-code runs
+as, unless tapto-code runs elevated (or as root), since that account can
+rewrite policy anyway. Elsewhere a script is either executable, in which case
+its `#!` line decides how it runs, or a `.sh` file, which runs under `/bin/sh`.
 
 Because values are literal arguments, the model cannot inject extra commands.
 Put placeholders only at *data* positions, not where they could become a flag

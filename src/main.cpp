@@ -397,6 +397,10 @@ int cmd_command(std::optional<Level> level, const std::vector<std::string>& rest
             ui::print_error(why);
             return 2;
         }
+        if (std::string why = command_line_refusal(cmdline); !why.empty()) {
+            ui::print_error(why);
+            return 2;
+        }
         try {
             add_command(lvl, name, cmdline);
         } catch (const std::exception& e) {
@@ -1481,6 +1485,10 @@ int cmd_chat(const std::string& requested_provider, bool resume) {
                 continue;
             }
             std::string cmdline = remainder.substr(begin);
+            if (std::string why = command_line_refusal(cmdline); !why.empty()) {
+                ui::print_line("error: " + why);
+                continue;
+            }
             try {
                 add_command(Level::Local, name, cmdline);
                 ui::print_command_added(name, "local", cmdline);

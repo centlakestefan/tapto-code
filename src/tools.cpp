@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <cstdio>
 #include <cwctype>
@@ -25,7 +26,9 @@
 #  include <windows.h>
 #else
 #  include <unistd.h>
+#  include <sys/stat.h>
 #  include <sys/wait.h>
+extern char** environ;
 #endif
 
 #include <nlohmann/json.hpp>
@@ -199,7 +202,7 @@ const Folder* granted_owner(const fs::path& resolved, bool writable_only) {
 //               read whichever spelling the model picks (the editor's view,
 //               find_files, the built-in cat/ls/head/...).
 //   Write       the granted folders marked rw: the editor's create and edit,
-//               and the cwd and %p paths of an allow-listed shell command --
+//               and the cwd and %p paths of an allow-listed command --
 //               letting the model edit a folder and letting it run the
 //               project's own build there is the same trust.
 //   WorkingDir  the working directory alone.
@@ -376,14 +379,16 @@ bool is_within(const fs::path& root, const fs::path& path) {
 }
 
 // The folders tapto-code keeps its own state in: ~/.tapto (the global store,
-// every project's local store and command list, saved conversations) and the
-// machine-wide store. None of it is the model's to change, and a writable command store
+// every project's local store and command list, saved conversations), the
+// machine-wide store, and the folders the scripts allow-listed commands name
+// live in. None of it is the model's to change, and a writable command store
 // is a way to run anything: the agent adds a command and runs it. That
 // matters as soon as the working directory contains them, which is what
 // starting tapto-code in the home folder (or at the root of a drive) does.
 std::vector<fs::path> tapto_dirs() {
     std::vector<fs::path> dirs;
-    for (const fs::path& d : {global_dir(), config_path(Level::System).parent_path()}) {
+    for (const fs::path& d : {global_dir(), config_path(Level::System).parent_path(),
+                              machine_script_folder(), user_script_folder()}) {
         if (!d.empty()) dirs.push_back(canonical_or_normal(d));
     }
     return dirs;
@@ -419,8 +424,8 @@ bool refuse_protected_write(const fs::path& resolved, const std::string& input, 
         return true;
     }
     if (in_tapto_dir(resolved, input)) {
-        error = "ERROR: '" + input + "' is inside tapto-code's own folders (its settings "
-                "and allow-listed commands), which tapto-code never writes to. "
+        error = "ERROR: '" + input + "' is inside tapto-code's own folders (its settings, "
+                "allow-listed commands and scripts), which tapto-code never writes to. "
                 "Only the user can change them.";
         return true;
     }
@@ -831,54 +836,283 @@ std::string execute_find_files(Context& /*context*/, const json& in) {
 
 // --- command tools (allow-listed) -----------------------------------------
 
-// Run a command line through the OS shell, capturing stdout+stderr. The command
-// itself is trusted (it came from the user's allow-list); the model only ever
-// selects one by name, never supplies the command text. `cwd` (always inside the
-// sandbox) is the directory the command runs in: because popen offers no way to
-// name a working directory, we prepend a `cd` with platform-safe quoting.
-std::string run_shell(const std::string& cmdline, const fs::path& cwd, int& exit_code) {
-    const std::string dir = cwd.string();
-    std::string full;
-#ifdef _WIN32
-    if (dir.find_first_of("\"%") != std::string::npos) {
-        exit_code = -1;
-        return "ERROR: the working directory '" + dir +
-               "' contains a character (\" or %) cmd.exe would interpret. "
-               "Use a plain directory name.";
-    }
-    full = "cd /d \"" + dir + "\" && " + cmdline + " 2>&1";
-#else
-    std::string cd = "cd '";
-    for (char c : dir) {
-        if (c == '\'') cd += "'\\''"; // close, escaped quote, reopen
-        else cd += c;
-    }
-    cd += "'";
-    full = cd + " && " + cmdline + " 2>&1";
-#endif
-#ifdef _WIN32
-    FILE* pipe = _popen(full.c_str(), "r");
-#else
-    FILE* pipe = popen(full.c_str(), "r");
-#endif
-    if (!pipe) {
-        exit_code = -1;
-        return "ERROR: failed to start command";
-    }
-
-    std::string out;
-    char buf[4096];
-    size_t n;
-    while ((n = std::fread(buf, 1, sizeof(buf), pipe)) > 0) out.append(buf, n);
+// --- finding a command's program --------------------------------------------
+//
+// The allow-list fixes a command's text, not the program that text ends up
+// starting. CreateProcess and cmd.exe both look in the current directory
+// before PATH, and the current directory is the sandbox, which the model can
+// write to: a `nmake.bat` it created there ran instead of the real nmake. So
+// the program is looked up here, by a search that skips every folder the model
+// could have put it in, and started by its absolute path. Nothing is handed to
+// a shell to parse either: a command that needs pipes or redirection names a
+// script in a script folder (commands.h), which only an administrator, or the
+// user, can write.
 
 #ifdef _WIN32
-    exit_code = _pclose(pipe);
+// True when this process can change the file or folder at `p`: write to it,
+// add to it, delete it, or rewrite its permissions. Asked of the access check
+// rather than worked out from the ACL here, so group membership, deny entries
+// and inheritance are Windows' to judge. Anything that can't be checked counts
+// as writable.
+bool token_can_write(const fs::path& p) {
+    std::error_code ec;
+    const bool dir = fs::is_directory(p, ec);
+    const DWORD need = dir ? (FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY | FILE_DELETE_CHILD |
+                              DELETE | WRITE_DAC | WRITE_OWNER)
+                           : (FILE_WRITE_DATA | FILE_APPEND_DATA | DELETE | WRITE_DAC | WRITE_OWNER);
+    const SECURITY_INFORMATION what =
+        OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
+    DWORD size = 0;
+    GetFileSecurityW(p.c_str(), what, nullptr, 0, &size);
+    if (size == 0) return true;
+    std::vector<unsigned char> sd(size);
+    if (!GetFileSecurityW(p.c_str(), what, sd.data(), size, &size)) return true;
+
+    HANDLE process = nullptr, token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE, &process)) return true;
+    const BOOL dup = DuplicateToken(process, SecurityImpersonation, &token);
+    CloseHandle(process);
+    if (!dup) return true;
+
+    GENERIC_MAPPING mapping = {FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_GENERIC_EXECUTE,
+                               FILE_ALL_ACCESS};
+    PRIVILEGE_SET privileges{};
+    DWORD privileges_size = sizeof(privileges);
+    DWORD granted = 0;
+    BOOL status = FALSE;
+    const BOOL ok = AccessCheck(sd.data(), token, MAXIMUM_ALLOWED, &mapping, &privileges,
+                                &privileges_size, &granted, &status);
+    CloseHandle(token);
+    if (!ok) return true;
+    return status && (granted & need) != 0;
+}
+
+// An elevated process can rewrite policy itself, so guarding the machine's
+// script folder against it would protect nothing.
+bool process_is_elevated() {
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return false;
+    TOKEN_ELEVATION elevation{};
+    DWORD size = 0;
+    const BOOL ok = GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &size);
+    CloseHandle(token);
+    return ok && elevation.TokenIsElevated;
+}
 #else
-    int status = pclose(pipe);
-    exit_code = (status != -1 && WIFEXITED(status)) ? WEXITSTATUS(status) : status;
+// True when this process can change the file or folder at `p`: it may write
+// to it, or it owns it and so may make it writable.
+bool token_can_write(const fs::path& p) {
+    struct stat st{};
+    if (stat(p.c_str(), &st) != 0) return true;
+    return st.st_uid == geteuid() || access(p.c_str(), W_OK) == 0;
+}
+
+bool process_is_elevated() { return geteuid() == 0; }
+#endif
+
+// True if the model could have put a file at `p`: the editor would write
+// there (the sandbox or a read-write grant, minus the git directory and
+// tapto-code's own folders), and the operating system would let it. The
+// second half is what keeps a tool on PATH usable when tapto-code is started
+// at the root of a drive, where System32 is inside the sandbox but no more
+// writable than ever.
+bool agent_could_plant(const fs::path& p) {
+    if (!is_within(sandbox_root(), p) && !granted_owner(p, /*writable_only=*/true)) return false;
+    const std::string as_written = p.u8string();
+    if (in_git_dir(p, as_written) || in_tapto_dir(p, as_written)) return false;
+    return token_can_write(p);
+}
+
+// The machine's script folder speaks for the organization, so the user must
+// not be able to change it either: not the script (it would change what a
+// policy command does) and not the folder (a new script there would stand in
+// for a program on PATH). The MSI creates it writable by administrators only.
+bool machine_script_trusted(const fs::path& dir, const fs::path& file) {
+    if (process_is_elevated()) return true;
+    return !token_can_write(dir) && !token_can_write(file);
+}
+
+// One entry of PATH per element, as written: unquoted, and without the empty
+// and relative entries, which mean "the current directory".
+std::vector<fs::path> path_entries() {
+#ifdef _WIN32
+    std::wstring value;
+    if (const DWORD n = GetEnvironmentVariableW(L"PATH", nullptr, 0); n > 0) {
+        value.resize(n);
+        value.resize(GetEnvironmentVariableW(L"PATH", value.data(), n));
+    }
+    const wchar_t sep = L';';
+#else
+    const char* raw = std::getenv("PATH");
+    const std::string value = raw ? raw : "";
+    const char sep = ':';
+#endif
+    std::vector<fs::path> out;
+    size_t start = 0;
+    while (start <= value.size()) {
+        size_t end = value.find(sep, start);
+        if (end == value.npos) end = value.size();
+        auto entry = value.substr(start, end - start);
+#ifdef _WIN32
+        entry.erase(std::remove(entry.begin(), entry.end(), L'"'), entry.end());
+#endif
+        const fs::path p(entry);
+        if (!entry.empty() && p.is_absolute()) out.push_back(p);
+        start = end + 1;
+    }
+    return out;
+}
+
+// A program found for a command.
+struct Program {
+    fs::path path;
+    // Run through the shell as a script: a .bat/.cmd on Windows; elsewhere a
+    // .sh without the execute bit (one with it runs by its #! line).
+    bool script = false;
+};
+
+bool ext_is(const fs::path& p, const char* ext) {
+    return component_is(p.extension(), ext);
+}
+
+#ifdef _WIN32
+// The only kinds of file a command may start, which is also what a bare name
+// is completed with, in PATHEXT's order. A .ps1, .vbs or .js would need an
+// interpreter's own rules; a wrapper .cmd can start one if it must.
+bool runnable_ext(const fs::path& ext) {
+    for (const char* e : {".exe", ".com", ".bat", ".cmd"}) {
+        if (component_is(ext, e)) return true;
+    }
+    return false;
+}
+
+std::vector<std::wstring> name_suffixes() {
+    std::vector<std::wstring> out;
+    wchar_t buf[1024];
+    const DWORD n = GetEnvironmentVariableW(L"PATHEXT", buf, 1024);
+    const std::wstring value = (n > 0 && n < 1024) ? std::wstring(buf, n) : L".COM;.EXE;.BAT;.CMD";
+    size_t start = 0;
+    while (start <= value.size()) {
+        size_t end = value.find(L';', start);
+        if (end == value.npos) end = value.size();
+        const std::wstring ext = value.substr(start, end - start);
+        if (!ext.empty() && runnable_ext(fs::path(ext))) out.push_back(ext);
+        start = end + 1;
+    }
+    if (out.empty()) out = {L".com", L".exe", L".bat", L".cmd"};
+    return out;
+}
+#endif
+
+// The files `name` could mean in `dir`, in the order they are tried, each
+// with whether it runs as a script. A file that can't be run is left out.
+std::vector<Program> candidates(const fs::path& dir, const fs::path& name) {
+    std::vector<Program> out;
+    std::error_code ec;
+#ifdef _WIN32
+    std::vector<fs::path> files;
+    if (runnable_ext(name.extension())) {
+        files.push_back(dir / name);
+    } else {
+        for (const auto& ext : name_suffixes()) files.push_back(dir / (name.wstring() + ext));
+    }
+    for (const auto& f : files) {
+        if (!fs::is_regular_file(f, ec)) continue;
+        out.push_back({f, ext_is(f, ".bat") || ext_is(f, ".cmd")});
+    }
+#else
+    const fs::path f = dir / name;
+    if (fs::is_regular_file(f, ec)) {
+        if (access(f.c_str(), X_OK) == 0) out.push_back({f, false});
+        else if (ext_is(f, ".sh")) out.push_back({f, true});
+    }
 #endif
     return out;
 }
+
+// Find the program `name` names. A path (`build/tests`, `./configure`, an
+// absolute one) is taken as written, relative to `cwd`: the command's author
+// chose that file, and trusting a file in the tree is the trust allow-listing
+// a build already is (see the README). A bare name is looked up in the script
+// folders and then on PATH, skipping any folder the model could have written
+// to — which is the hole this closes: it is the bare name an attacker shadows.
+bool find_program(const std::string& name, const fs::path& cwd, Program& out, std::string& error) {
+    const fs::path np = fs::u8path(name);
+    if (np.empty()) { error = "ERROR: empty command"; return false; }
+
+    if (np.has_parent_path() || np.is_absolute()) {
+        const fs::path full = canonical_or_normal(np.is_absolute() ? np : cwd / np);
+        const auto found = candidates(full.parent_path(), full.filename());
+        if (found.empty()) {
+            error = "ERROR: '" + name + "' was not found, or is not something tapto-code can run.";
+            return false;
+        }
+        out = found.front();
+        return true;
+    }
+
+    const fs::path machine = canonical_or_normal(machine_script_folder());
+    std::vector<fs::path> dirs = {machine};
+    if (policy_allows_user_commands()) dirs.push_back(canonical_or_normal(user_script_folder()));
+    for (const auto& p : path_entries()) dirs.push_back(canonical_or_normal(p));
+
+    std::string ignored;
+    for (const auto& dir : dirs) {
+        const auto found = candidates(dir, np);
+        if (found.empty()) continue;
+        const Program& prog = found.front();
+        if (agent_could_plant(dir) || agent_could_plant(prog.path)) {
+            if (ignored.empty()) ignored = prog.path.u8string();
+            continue;
+        }
+        if (is_within(machine, prog.path) && !machine_script_trusted(dir, prog.path)) {
+            error = "ERROR: '" + prog.path.u8string() + "' is in the machine's script folder, "
+                    "but this account can change it, so it cannot speak for the organization. "
+                    "An administrator has to make the folder and its scripts read-only to "
+                    "users.";
+            return false;
+        }
+        out = prog;
+        return true;
+    }
+
+    error = "ERROR: '" + name + "' was not found in the script folders or on PATH.";
+    if (!ignored.empty()) {
+        error += " A copy at '" + ignored + "' was ignored: it is in a folder the agent can "
+                 "write to, so the agent could have put it there.";
+    }
+#ifdef _WIN32
+    error += " A cmd.exe built-in (dir, echo, copy, ...) or a command line with pipes or "
+             "redirection has to be a .cmd script in " + machine.u8string() +
+             (policy_allows_user_commands() ? " or " + user_script_folder().u8string() : "") +
+             ", named by the command.";
+#endif
+    return false;
+}
+
+// PATH for a command's process, without the folders the model could write
+// to: a script, or a build tool, starts programs of its own by name.
+#ifdef _WIN32
+std::wstring child_path() {
+    std::wstring out;
+    for (const auto& p : path_entries()) {
+        if (agent_could_plant(canonical_or_normal(p))) continue;
+        if (!out.empty()) out += L';';
+        out += p.wstring();
+    }
+    return out;
+}
+#else
+std::string child_path() {
+    std::string out;
+    for (const auto& p : path_entries()) {
+        if (agent_could_plant(canonical_or_normal(p))) continue;
+        if (!out.empty()) out += ':';
+        out += p.string();
+    }
+    return out;
+}
+#endif
 
 // Split a (trusted, author-written) command template into tokens, honoring
 // simple double-quote grouping so a token may contain spaces.
@@ -1046,10 +1280,49 @@ std::string win_quote_arg(const std::string& a) {
     return out;
 }
 
-// Run argv directly (no shell) and capture stdout+stderr.
-// Launch one command line, capturing stdout+stderr. On success returns true and
-// fills out/code; if the process couldn't be started returns false and sets err.
-bool win_launch(const std::string& cmdline, const std::wstring& cwd,
+bool env_name_is(const std::wstring& var, const wchar_t* name) {
+    const size_t n = std::wcslen(name);
+    if (var.size() <= n || var[n] != L'=') return false;
+    for (size_t i = 0; i < n; ++i) {
+        if (std::towlower(var[i]) != std::towlower(name[i])) return false;
+    }
+    return true;
+}
+
+// The environment block a command runs with: ours, with PATH stripped of the
+// folders the model could write to (child_path), and with
+// NoDefaultCurrentDirectoryInExePath set, which stops cmd.exe -- running a
+// script, or started by a build -- and anything else that asks Windows
+// (NeedCurrentDirectoryForExePath) from looking in the current directory for
+// a program, the very lookup a planted nmake.bat relied on.
+std::vector<wchar_t> child_environment() {
+    std::vector<std::wstring> vars;
+    if (LPWCH block = GetEnvironmentStringsW()) {
+        for (LPWCH p = block; *p; p += std::wcslen(p) + 1) vars.emplace_back(p);
+        FreeEnvironmentStringsW(block);
+    }
+    const wchar_t* const no_cwd = L"NoDefaultCurrentDirectoryInExePath";
+    vars.erase(std::remove_if(vars.begin(), vars.end(),
+                              [&](const std::wstring& v) {
+                                  return env_name_is(v, L"PATH") || env_name_is(v, no_cwd);
+                              }),
+               vars.end());
+    vars.push_back(L"Path=" + child_path());
+    vars.push_back(std::wstring(no_cwd) + L"=1");
+
+    std::vector<wchar_t> out;
+    for (const auto& v : vars) {
+        out.insert(out.end(), v.begin(), v.end());
+        out.push_back(L'\0');
+    }
+    out.push_back(L'\0');
+    return out;
+}
+
+// Start `app` with `cmdline`, capturing stdout+stderr. On success returns true
+// and fills out/code; if the process couldn't be started returns false and
+// sets err.
+bool win_launch(const std::wstring& app, const std::wstring& cmdline, const std::wstring& cwd,
                 std::string& out, int& code, DWORD& err) {
     SECURITY_ATTRIBUTES sa{};
     sa.nLength = sizeof(sa);
@@ -1066,12 +1339,14 @@ bool win_launch(const std::string& cmdline, const std::wstring& cwd,
     si.hStdError = wr;
     PROCESS_INFORMATION pi{};
 
-    std::wstring wcmd = utf8_to_wide(cmdline);
-    std::vector<wchar_t> buf(wcmd.begin(), wcmd.end());
+    std::vector<wchar_t> buf(cmdline.begin(), cmdline.end());
     buf.push_back(L'\0');
+    std::vector<wchar_t> env = child_environment();
 
-    BOOL ok = CreateProcessW(nullptr, buf.data(), nullptr, nullptr, TRUE,
-                             CREATE_NO_WINDOW, nullptr,
+    // `app` is an absolute path, so CreateProcess runs exactly that file and
+    // searches nowhere.
+    BOOL ok = CreateProcessW(app.c_str(), buf.data(), nullptr, nullptr, TRUE,
+                             CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT, env.data(),
                              cwd.empty() ? nullptr : cwd.c_str(), &si, &pi);
     if (!ok) { err = GetLastError(); CloseHandle(wr); CloseHandle(rd); return false; }
     CloseHandle(wr);
@@ -1091,73 +1366,119 @@ bool win_launch(const std::string& cmdline, const std::wstring& cwd,
     return true;
 }
 
-std::string exec_capture(const std::vector<std::string>& argv, const fs::path& cwd, int& exit_code) {
-    std::string cmdline;
-    for (size_t i = 0; i < argv.size(); ++i) { if (i) cmdline += ' '; cmdline += win_quote_arg(argv[i]); }
+// Run argv (no shell, unless the program is a script) and capture
+// stdout+stderr. `started` is false when it never ran -- not found, refused,
+// or not startable -- and the result is then tapto-code's error message.
+std::string exec_capture(const std::vector<std::string>& argv, const fs::path& cwd, int& exit_code,
+                         bool& started) {
+    exit_code = -1;
+    started = false;
+    Program prog;
+    std::string error;
+    if (!find_program(argv[0], cwd, prog, error)) return error;
+    const std::string path = prog.path.u8string();
 
-    std::wstring wcwd = utf8_to_wide(cwd.string());
-    std::string out;
-    DWORD err = 0;
-    if (win_launch(cmdline, wcwd, out, exit_code, err)) return out;
+    std::string rest;
+    for (size_t i = 1; i < argv.size(); ++i) rest += ' ' + win_quote_arg(argv[i]);
 
-    // Batch wrappers (.cmd/.bat such as npm, npx, yarn) and shell builtins can't
-    // be launched by CreateProcess directly; if the program wasn't found, retry
-    // through cmd.exe, which resolves them via PATHEXT. (/s + surrounding quotes
-    // makes cmd run the rest of the line verbatim.)
-    //
-    // That line was quoted for CommandLineToArgvW, which cmd.exe does not speak:
-    // it has no \" escape, so a quote inside a value toggles its quoting state
-    // and whatever follows — `& del ...` — becomes live shell syntax, and %VAR%
-    // is expanded even inside quotes. No quoting makes arbitrary text safe for
-    // cmd.exe, so the only honest answer is to refuse values that contain its
-    // metacharacters rather than silently hand the model a shell.
-    if (err == ERROR_FILE_NOT_FOUND) {
-        for (const std::string& a : argv) {
-            if (a.find_first_of("\"&|<>^%\r\n") != std::string::npos) {
-                exit_code = -1;
-                return "ERROR: '" + argv[0] + "' is a batch wrapper that must run via "
-                       "cmd.exe, and the argument '" + a + "' contains a character "
+    std::wstring app, cmdline;
+    if (!prog.script) {
+        app = prog.path.wstring();
+        cmdline = utf8_to_wide(win_quote_arg(path) + rest);
+    } else {
+        // A .bat/.cmd only runs under cmd.exe, which re-parses the line. It
+        // has no \" escape, so a quote inside a value toggles its quoting
+        // and whatever follows -- `& del ...` -- becomes live syntax, and
+        // %VAR% is expanded even inside quotes. No quoting makes arbitrary
+        // text safe for cmd.exe, so values holding its metacharacters are
+        // refused rather than silently handing the model a shell. /d skips
+        // the AutoRun commands in the registry, /v:off makes `!` plain text,
+        // and /s with the outer quotes runs the rest of the line verbatim.
+        for (size_t i = 1; i < argv.size(); ++i) {
+            if (argv[i].find_first_of("\"&|<>^%\r\n") != std::string::npos) {
+                return "ERROR: '" + argv[0] + "' is a batch script that must run via "
+                       "cmd.exe, and the argument '" + argv[i] + "' contains a character "
                        "(one of \" & | < > ^ % or a newline) that cmd.exe would "
                        "interpret. Use a value without those characters.";
             }
         }
-        std::string viacmd = "cmd.exe /s /c \"" + cmdline + "\"";
-        if (win_launch(viacmd, wcwd, out, exit_code, err)) return out;
+        if (path.find('%') != std::string::npos) {
+            return "ERROR: the script '" + path + "' has a % in its path, which cmd.exe "
+                   "would expand. Move it to a folder without one.";
+        }
+        wchar_t sys[MAX_PATH];
+        const UINT n = GetSystemDirectoryW(sys, MAX_PATH);
+        if (n == 0 || n >= MAX_PATH) return "ERROR: cannot locate cmd.exe";
+        app = std::wstring(sys, n) + L"\\cmd.exe";
+        cmdline = L"\"" + app + L"\" /d /v:off /s /c \"" +
+                  utf8_to_wide("\"" + path + "\"" + rest) + L"\"";
     }
 
+    std::string out;
+    DWORD err = 0;
+    if (win_launch(app, cmdline, utf8_to_wide(cwd.u8string()), out, exit_code, err)) {
+        started = true;
+        return out;
+    }
     exit_code = -1;
-    return "ERROR: failed to start '" + argv[0] + "' (CreateProcess error " +
+    return "ERROR: failed to start '" + path + "' (CreateProcess error " +
            std::to_string(err) + ")";
 }
 #else
-// Run argv directly (no shell) and capture stdout+stderr. The child chdir's to
-// `cwd` (inside the sandbox) before exec, so the parent's working directory is
-// never touched.
-std::string exec_capture(const std::vector<std::string>& argv, const fs::path& cwd, int& exit_code) {
+// Run argv (no shell, unless the program is a script without the execute
+// bit) and capture stdout+stderr; `started` as on Windows. The child
+// chdir's to `cwd` (inside the sandbox) before exec, so the parent's working
+// directory is never touched.
+std::string exec_capture(const std::vector<std::string>& argv, const fs::path& cwd, int& exit_code,
+                         bool& started) {
+    exit_code = -1;
+    started = false;
+    Program prog;
+    std::string error;
+    if (!find_program(argv[0], cwd, prog, error)) return error;
+
+    // Everything the child needs is built before fork, so it only calls
+    // what is safe there.
+    std::string file = prog.path.string();
+    std::vector<std::string> args = argv;
+    if (prog.script) {
+        args.insert(args.begin(), "sh");
+        args[1] = file;
+        file = "/bin/sh";
+    }
+    std::vector<std::string> env;
+    for (char** e = environ; *e; ++e) {
+        if (std::strncmp(*e, "PATH=", 5) != 0) env.emplace_back(*e);
+    }
+    env.push_back("PATH=" + child_path());
+    std::vector<char*> c, e;
+    for (auto& s : args) c.push_back(s.data());
+    c.push_back(nullptr);
+    for (auto& s : env) e.push_back(s.data());
+    e.push_back(nullptr);
+    const std::string dir = cwd.string();
+
     int fds[2];
-    if (pipe(fds) != 0) { exit_code = -1; return "ERROR: pipe failed"; }
+    if (pipe(fds) != 0) return "ERROR: pipe failed";
     pid_t pid = fork();
-    if (pid < 0) { close(fds[0]); close(fds[1]); exit_code = -1; return "ERROR: fork failed"; }
+    if (pid < 0) { close(fds[0]); close(fds[1]); return "ERROR: fork failed"; }
     if (pid == 0) {
         dup2(fds[1], STDOUT_FILENO);
         dup2(fds[1], STDERR_FILENO);
         close(fds[0]);
         close(fds[1]);
-        const std::string dir = cwd.string();
         if (chdir(dir.empty() ? "." : dir.c_str()) != 0) {
-            std::string e = "ERROR: failed to change to working directory '" + dir + "'\n";
-            (void)!write(STDOUT_FILENO, e.data(), e.size());
+            const char msg[] = "ERROR: failed to change to the working directory\n";
+            (void)!write(STDOUT_FILENO, msg, sizeof(msg) - 1);
             _exit(127);
         }
-        std::vector<char*> c;
-        for (const auto& s : argv) c.push_back(const_cast<char*>(s.c_str()));
-        c.push_back(nullptr);
-        execvp(c[0], c.data());
-        std::string e = "ERROR: failed to exec '" + argv[0] + "'\n";
-        (void)!write(STDOUT_FILENO, e.data(), e.size());
+        execve(file.c_str(), c.data(), e.data());
+        const char msg[] = "ERROR: failed to start the program\n";
+        (void)!write(STDOUT_FILENO, msg, sizeof(msg) - 1);
         _exit(127);
     }
     close(fds[1]);
+    started = true;
     std::string out;
     char chunk[4096];
     ssize_t n;
@@ -1417,7 +1738,7 @@ std::string builtin_tree(const std::vector<std::string>& args, const fs::path& b
 
 // Built-in commands take a relative-to-base path: their target is resolved
 // against `base` (the command's `cwd`) and pinned to the sandbox, so `ls`/`cat`/
-// `tree` honour `cwd` the same way the shell-built commands do, and can also
+// `tree` honour `cwd` the same way the allow-listed commands do, and can also
 // take a full/relative-from-root path directly.
 std::string run_builtin_command(const std::string& name, const std::vector<std::string>& args,
                                 const fs::path& base) {
@@ -1478,10 +1799,10 @@ std::string execute_run_command(Context& /*context*/, const json& in) {
         // relative to the sandbox and confined to it, so a build can be pointed
         // at any subfolder — but never out of the tree. This is shared by BOTH
         // the built-ins (they resolve their relative path against it) and the
-        // shell-built commands (they run with it as their working dir), so a
+        // allow-listed commands (they run with it as their working dir), so a
         // `cwd` means the same thing in either case. What "the tree" includes
         // differs: a built-in only reads, so any granted folder will do; a
-        // shell command may do anything, so only one granted read-write.
+        // command may do anything, so only one granted read-write.
         fs::path base = sandbox_root();
         if (in.contains("cwd")) {
             if (!in["cwd"].is_string()) return "ERROR: 'cwd' must be a string.";
@@ -1491,8 +1812,8 @@ std::string execute_run_command(Context& /*context*/, const json& in) {
             const Scope scope = builtin ? Scope::Read : Scope::Write;
             if (!resolve_in_sandbox(raw, base, err, fs::path(), scope)) return err;
             // A built-in only reads, so it may look inside a git directory or
-            // tapto-code's own folders; a shell command run there could write
-            // whatever it likes.
+            // tapto-code's own folders; any other command run there could
+            // write whatever it likes.
             if (!builtin && refuse_protected_write(base, raw, err)) return err;
             std::error_code ec;
             if (!fs::is_directory(base, ec)) {
@@ -1520,31 +1841,29 @@ std::string execute_run_command(Context& /*context*/, const json& in) {
         }
         const std::string& tpl = it->second;
 
-        int exit_code = 0;
-        std::string output;
-        std::string display;
-        if (template_has_placeholder(tpl)) {
-            // Parameterized: expand to argv and exec directly — no shell, so the
-            // model-supplied values are passed literally (no quoting needed).
-            std::vector<std::string> argv;
+        // A command defined before shell syntax was refused (or written into a
+        // store by hand) says so, rather than handing `|` to the program.
+        if (std::string why = command_line_refusal(tpl); !why.empty()) {
+            return "ERROR: the command '" + name + "' (" + tpl + ") cannot run: " + why +
+                   ". Only the user or an administrator can change that; tell the user.";
+        }
+
+        // Every command is expanded to argv and run directly — no shell, so
+        // model-supplied values are passed literally (no quoting needed). A
+        // command without placeholders takes no values; build_argv refuses
+        // any rather than silently dropping them.
+        std::vector<std::string> argv;
+        {
             std::string err;
             if (!build_argv(tpl, args, base, argv, err)) return err;
-            display = join_argv(argv);
-            output = exec_capture(argv, base, exit_code);
-        } else {
-            // No placeholders: the command takes no arguments, so any supplied
-            // ones are a model error — reject rather than silently drop them
-            // (build_argv's arity check can't catch this path, as it runs
-            // parameterized templates only).
-            if (!args.empty()) {
-                return "ERROR: command takes no arguments but " +
-                       std::to_string(args.size()) + " were provided. "
-                       "Extra values would be silently ignored, so the call was rejected.";
-            }
-            // Run through the shell (allows pipes/redirection).
-            display = tpl;
-            output = run_shell(tpl, base, exit_code);
         }
+        int exit_code = 0;
+        bool started = false;
+        const std::string display = join_argv(argv);
+        std::string output = exec_capture(argv, base, exit_code, started);
+        // Not found, refused or not startable: an error of tapto-code's own,
+        // not output of the program.
+        if (!started) return output;
 
         constexpr size_t kMaxBytes = 16000;
         if (output.size() > kMaxBytes) output = output.substr(0, kMaxBytes) + "\n... [output truncated]";
