@@ -46,6 +46,8 @@ breaking changes and the patch number everything else.)
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-10-04
+
 ### Security
 
 - An allow-listed command such as `nmake` could run a `nmake.bat` the model
@@ -59,12 +61,12 @@ breaking changes and the patch number everything else.)
 
 ### Changed
 
-- **Breaking:** commands are no longer run through a shell. A command line
-  with a pipe, a redirection, `&&` or a `cmd.exe` built-in (`dir`, `echo`)
-  is refused by `command add` and when it runs. Move it into a script in
-  `%ProgramFiles%\Centlake\tapto\scripts` (or, for your own commands,
-  `~/.tapto/scripts`) and allow-list the script's name instead. Your
-  administrator can move the machine's folder with the new *Script folder*
+- **Breaking:** commands are no longer run through a shell, so a command
+  line with a pipe, a redirection, `&&` or a built-in such as `dir` or
+  `echo` is refused. Put it in a script in
+  `%ProgramFiles%\Centlake\tapto\scripts` (your own commands:
+  `~/.tapto/scripts`) and allow-list the script's name instead.
+- Your administrator can move that folder with the new *Script folder*
   policy.
 
 ### Added
@@ -323,7 +325,8 @@ provider's name when `provider` is absent.
 Initial release: an agent that reads, writes and runs code in a sandboxed
 project directory, against Claude, OpenAI or Gemini. ([d9ac02c])
 
-[Unreleased]: https://github.com/centlakestefan/tapto-code/compare/v1.0.4...HEAD
+[Unreleased]: https://github.com/centlakestefan/tapto-code/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/centlakestefan/tapto-code/compare/v1.0.4...v1.1.0
 [1.0.4]: https://github.com/centlakestefan/tapto-code/compare/v1.0.3...v1.0.4
 [1.0.3]: https://github.com/centlakestefan/tapto-code/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/centlakestefan/tapto-code/compare/v1.0.1...v1.0.2

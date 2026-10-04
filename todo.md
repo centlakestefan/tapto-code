@@ -5,25 +5,28 @@ and kept for its notes.
 
 ---
 
-# 1.0.5: the version in every request
+# 1.1.0: the version in every request, commands without a shell
 
-Committed, not pushed (25 Sep): libtapto `91151da` tagged `v0.2.0`
+Released 4 Oct as 1.1.0, not the planned 1.0.5: commands no longer running
+through a shell is a breaking change, and it was not big enough for 2.0.
+
+Pushed 25 Sep: libtapto `91151da` tagged `v0.2.0`
 (`AiConfig::setUserAgent`, sent by all three clients) and tapto-code `f1e7e2b`
 (`User-Agent: tapto-code/<version> (<commit>; <os>)`, `LIBTAPTO_TAG` v0.2.0,
 README policy section, `[Unreleased]` entry).
 
-- [ ] Push libtapto `main` and `v0.2.0` **before** tapto-code `main`: CI
+- [x] Push libtapto `main` and `v0.2.0` **before** tapto-code `main`: CI
       fetches the tag at configure time and fails without it.
 - [ ] The LiteLLM side: a pre-call hook that reads the request's User-Agent
       and refuses anything without `tapto-code/` or below a minimum version,
       with a 4xx whose message says where to get the update. tapto-code does
       not retry a 4xx and prints its text, so the message reaches the user
-      as written. Versions before 1.0.5 send cpp-httplib's default, so
+      as written. Versions before 1.1.0 send cpp-httplib's default, so
       "requires tapto-code/" catches all of them.
-- [ ] Release 1.0.5 as 1.0.4 was: CMakeLists version, `[1.0.5]` section with
+- [x] Release 1.1.0 as 1.0.4 was: CMakeLists version, `[1.1.0]` section with
       date and compare links, tag, then the pin in tapto-code-install.
 
-## Also in 1.0.5: commands without a shell, `.tapto` read-only
+## Also in 1.1.0: commands without a shell, `.tapto` read-only
 
 A user's allow-listed `nmake` ran a `nmake.bat` the model wrote into the
 project (cmd.exe searches the current directory first). Now: the program is
@@ -41,8 +44,8 @@ machine store and the script folders are write-protected like `.git`.
   4 Oct: Program Files stays the default (ProgramData lets users add files and
   squat the folder). A per-machine `tapto-admin.msi` only if a customer asks.
 - [ ] Release notes / mail to administrators: allow-lists with pipes, `&&`,
-      `dir`/`echo` stop working in 1.0.5; move them into `.cmd` scripts.
-- [ ] Follow-up, not 1.0.5: the agent can still edit what an allow-listed
+      `dir`/`echo` stop working in 1.1.0; move them into `.cmd` scripts.
+- [ ] Follow-up, not 1.1.0: the agent can still edit what an allow-listed
       build reads (Makefile, CMakeLists.txt, package.json scripts). Idea: a
       per-command list of build-input globs, and a confirmation before the
       command runs when the agent changed one since the last confirmed run.
@@ -51,7 +54,7 @@ machine store and the script folders are write-protected like `.git`.
 
 ---
 
-# 1.1.0: plugins
+# 1.2.0: plugins
 
 Features beyond the core come as plugin modules, a DLL/SO each, instead of
 growing tapto-code. The core stays small enough to audit; a customer who
