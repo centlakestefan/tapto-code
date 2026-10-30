@@ -868,7 +868,11 @@ struct RawTerminal {
 // This editor consumes those sequences as cursor moves and history recall
 // instead, and echoes the line itself as it is typed. Multi-line pastes are
 // captured through the bracketed-paste markers (ESC [ 200~ ... ESC [ 201~)
-// that most terminals send, and land in the line as newlines.
+// that most terminals send, and land in the line as newlines. A typed line
+// break is made by ending the line in a backslash and pressing Enter (as in
+// a shell): no terminal sends a distinct key for Shift-Enter, so Enter and
+// Shift-Enter arrive as the same byte and only a typed marker can tell the
+// two apart.
 //
 // Returns false on EOF, or when stdin is not a terminal (read_user_input
 // then falls back to getline).
@@ -943,8 +947,9 @@ size_t display_cols(const std::string& s, size_t i, size_t adv) {
 // Read one line from a terminal, with the program doing its own line
 // editing (echo off). The arrow keys' ESC sequences are consumed as cursor
 // moves and history recall instead of being recorded as "[A" and friends.
-// Bracketed pastes land in the line with their newlines. Returns false on
-// EOF, or when stdin is not a terminal.
+// Bracketed pastes land in the line with their newlines, and Enter at the
+// end of a line ending in a backslash starts the next row instead of
+// sending. Returns false on EOF, or when stdin is not a terminal.
 bool posix_read_line(const std::string& prompt_text, std::string& out) {
     if (!isatty(STDIN_FILENO)) return false; // not a terminal; caller uses getline
     RawTerminal raw; // unbuffered, no echo; ISIG stays on, so Ctrl-C still
@@ -1134,6 +1139,12 @@ bool posix_read_line(const std::string& prompt_text, std::string& out) {
         return true;
     };
 
+    auto odd_trailing_backslashes = [&]() -> bool {
+        size_t n = 0;
+        while (n < line.size() && line[line.size() - 1 - n] == '\\') ++n;
+        return n % 2 == 1;
+    };
+
     for (;;) {
         // The terminal delivers the first byte of a character or sequence
         // when it is pressed, so a blocking read waits for exactly that.
@@ -1214,6 +1225,13 @@ bool posix_read_line(const std::string& prompt_text, std::string& out) {
             continue;
         }
         if (b == '\n' || b == '\r') {
+            if (odd_trailing_backslashes() && line.size() >= 2) {
+                line.pop_back();
+                line += '\n';
+                pos = line.size();
+                reprint();
+                continue;
+            }
             return submit();
         }
         if (b == 0x7f || b == '\b') { // backspace / delete

@@ -211,6 +211,14 @@ after filling the model's context window), `/compact`, `/env`,
 `/list-commands`, `/add-command <name> <command...>`, `/resume`, and the folder
 commands below.
 
+**Multi-line prompts.** End a line in a backslash and press Enter to keep the
+prompt going on the next line (as in a shell); press Enter on a line without
+one to send it. This is the way to type a newline into a message — no terminal
+sends Shift-Enter as anything the program can tell apart from Enter. Pasted
+text keeps its own line breaks, and they are sent as part of the one message.
+On Linux and macOS the prompt also supports the arrow keys, Ctrl-A/E/B/F, and
+recall of earlier prompts with the up and down arrows.
+
 **Resuming a conversation.** After every turn the conversation is saved to
 `session.json` beside the folder's local config (under `~/.tapto/projects`,
 never in the project; `/env` shows the path). If a chat ends by accident —
