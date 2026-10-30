@@ -31,15 +31,14 @@ endif()
 # that this file put there, is moved to the pin once, with a message.
 #
 # What is NOT in the library, and is this program's own: the tool table
-# (src/tools.cpp), the allow-listed commands (src/commands.cpp), the CLI and
-# chat loop (src/main.cpp), and src/ui.cpp, which supplies the bodies for the
+# (src/tools.cpp), the CLI and chat loop (src/main.cpp), and src/ui.cpp, which supplies the bodies for the
 # tapto::ui functions the library declares -- a terminal status line here.
 #
 # The library's unit tests run under ctest with ours: this is its only build
 # on MSVC, so a warning it trips here is fixed in the library and released.
 set(LIBTAPTO_BUILD_TESTS ON CACHE BOOL "" FORCE)
 include(FetchContent)
-set(LIBTAPTO_PIN "v0.7.1")
+set(LIBTAPTO_PIN "v0.9.0")
 if(NOT DEFINED CACHE{LIBTAPTO_TAG})
   set(LIBTAPTO_TAG "${LIBTAPTO_PIN}" CACHE STRING "libtapto version to build against")
 elseif(NOT LIBTAPTO_TAG STREQUAL LIBTAPTO_PIN)
@@ -121,7 +120,6 @@ endfunction()
 # --- Target -----------------------------------------------------------------
 add_executable(tapto-code
   src/main.cpp
-  src/commands.cpp
   src/prompt.cpp
   src/session.cpp
   src/tools.cpp
@@ -166,7 +164,6 @@ enable_testing()
 add_executable(test-edits
   tests/test_edits.cpp
   src/tools.cpp
-  src/commands.cpp
   "${libtapto_SOURCE_DIR}/test/ui_null.cpp"
 )
 target_include_directories(test-edits PRIVATE include)
@@ -223,7 +220,6 @@ add_executable(test-memory
   tests/test_memory.cpp
   "${libtapto_SOURCE_DIR}/src/plugins.cpp"
   src/tools.cpp
-  src/commands.cpp
   "${libtapto_SOURCE_DIR}/test/ui_null.cpp"
 )
 target_include_directories(test-memory PRIVATE include)
@@ -240,7 +236,6 @@ add_test(NAME memory COMMAND test-memory $<TARGET_FILE:tapto-plugin-memory>)
 add_executable(test-overflow
   tests/test_overflow.cpp
   src/tools.cpp
-  src/commands.cpp
   "${libtapto_SOURCE_DIR}/test/ui_null.cpp"
 )
 target_include_directories(test-overflow PRIVATE include)

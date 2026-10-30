@@ -12,9 +12,9 @@
 
 namespace tapto {
 
-// Returns the tools registered for chat: the str_replace text editor and a
-// file-search tool, both operating on the local filesystem relative to the
-// current working directory.
+// Returns the tools registered for chat, libtapto's over the granted folders:
+// the str_replace text editor and file search (tapto/editor.h), and
+// list_commands and run_command (tapto/commands.h).
 std::vector<ToolSpec> builtin_tools();
 
 // The folders the user has granted with /add-folder. The editor and
@@ -26,12 +26,6 @@ std::vector<ToolSpec> builtin_tools();
 // root (FolderSet::set_home) it must be the working directory; its label is
 // then accepted like a grant's.
 void set_granted_folders(const FolderSet* folders);
-
-// True if `name` is a reserved, always-available built-in command (wc, head,
-// tail, cat, ls, tree). These are implemented in-process (cross-platform) and
-// take precedence over user allow-listed commands, so the names can't be
-// reused for a user command.
-bool is_builtin_command(const std::string& name);
 
 // Resolve a path argument of a plugin tool (a schema property marked
 // "x-tapto-path"), so no plugin applies the path rules itself. `write` false
