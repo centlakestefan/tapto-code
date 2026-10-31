@@ -38,7 +38,7 @@ endif()
 # on MSVC, so a warning it trips here is fixed in the library and released.
 set(LIBTAPTO_BUILD_TESTS ON CACHE BOOL "" FORCE)
 include(FetchContent)
-set(LIBTAPTO_PIN "v0.9.0")
+set(LIBTAPTO_PIN "v0.9.1")
 if(NOT DEFINED CACHE{LIBTAPTO_TAG})
   set(LIBTAPTO_TAG "${LIBTAPTO_PIN}" CACHE STRING "libtapto version to build against")
 elseif(NOT LIBTAPTO_TAG STREQUAL LIBTAPTO_PIN)
