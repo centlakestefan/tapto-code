@@ -598,18 +598,6 @@ std::string trim(const std::string& s) {
     return s.substr(b, e - b + 1);
 }
 
-// A slash-command argument with its surrounding quotes removed, so a path
-// with spaces can be pasted as the shell shows it.
-std::string unquote(std::string s) {
-    s = trim(s);
-    if (s.size() >= 2 && ((s.front() == '"' && s.back() == '"') ||
-                          (s.front() == '\'' && s.back() == '\''))) {
-        s = s.substr(1, s.size() - 2);
-    }
-    return s;
-}
-
-
 // Write a key to the global (user) config scope.
 // /list-plugins: what is loaded, in what mode, and what else is installed.
 std::string list_plugins_text(const Plugins& plugins) {
