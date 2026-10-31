@@ -17,18 +17,13 @@ endif()
 # -- and it brings its own dependency pins (nlohmann_json, cpp-httplib,
 # OpenSSL), exported on the `tapto::tapto` target, so nothing is repeated here.
 #
-# Bump LIBTAPTO_PIN to take a library change. -DLIBTAPTO_TAG=main builds
-# against an unreleased library, and -DFETCHCONTENT_SOURCE_DIR_LIBTAPTO=<path>
-# against a working tree, which is how a change spanning both is developed.
-#
-# LIBTAPTO_TAG is a cache entry, and a cache entry's default never replaces a
-# value already in the cache, so a bumped default would not reach a build
-# folder configured before the bump: it kept building the old tag, silently.
-# The pin is therefore a plain variable, and the cache remembers which pin it
-# last filled in (_LIBTAPTO_PIN_SEEN): a LIBTAPTO_TAG still equal to that pin
-# follows the new one; one set by hand to anything else is left alone. A
-# cache from before this rule has no record, and its LIBTAPTO_TAG, a vX.Y.Z
-# that this file put there, is moved to the pin once, with a message.
+# The pin is tapto_pin()'s, from tapto-cmake (fetched first, at a literal
+# tag of its own): bump PIN below to take a library change, and an existing
+# build folder follows it. -DLIBTAPTO_TAG=main builds against an unreleased
+# library; -DTAPTO_SIBLINGS=<dir> builds libtapto (and tapto-cmake) from
+# <dir>/libtapto, a working tree, which is how a change spanning both is
+# developed, and says how far that tree is from the pin. -DTAPTO_PIN_STRICT=ON
+# (Jenkins) refuses anything but the pin.
 #
 # What is NOT in the library, and is this program's own: the tool table
 # (src/tools.cpp), the CLI and chat loop (src/main.cpp), and src/ui.cpp, which supplies the bodies for the
@@ -38,41 +33,27 @@ endif()
 # on MSVC, so a warning it trips here is fixed in the library and released.
 set(LIBTAPTO_BUILD_TESTS ON CACHE BOOL "" FORCE)
 include(FetchContent)
-set(LIBTAPTO_PIN "v0.9.1")
-if(NOT DEFINED CACHE{LIBTAPTO_TAG})
-  set(LIBTAPTO_TAG "${LIBTAPTO_PIN}" CACHE STRING "libtapto version to build against")
-elseif(NOT LIBTAPTO_TAG STREQUAL LIBTAPTO_PIN)
-  if(DEFINED CACHE{_LIBTAPTO_PIN_SEEN})
-    string(COMPARE EQUAL "${LIBTAPTO_TAG}" "${_LIBTAPTO_PIN_SEEN}" _follow_pin)
-  elseif(LIBTAPTO_TAG MATCHES "^v[0-9]+\\.[0-9]+\\.[0-9]+$")
-    set(_follow_pin TRUE)
-  else()
-    set(_follow_pin FALSE)
-  endif()
-  if(_follow_pin)
-    message(STATUS "libtapto: ${LIBTAPTO_TAG} -> ${LIBTAPTO_PIN} (the pin moved)")
-    set(LIBTAPTO_TAG "${LIBTAPTO_PIN}" CACHE STRING "libtapto version to build against" FORCE)
-  else()
-    message(STATUS "libtapto: building ${LIBTAPTO_TAG}, set by hand (the pin is ${LIBTAPTO_PIN})")
-  endif()
+if(TAPTO_SIBLINGS AND EXISTS "${TAPTO_SIBLINGS}/tapto-cmake")
+  FetchContent_Declare(tapto-cmake SOURCE_DIR "${TAPTO_SIBLINGS}/tapto-cmake")
+else()
+  FetchContent_Declare(tapto-cmake
+    GIT_REPOSITORY https://github.com/centlakestefan/tapto-cmake.git
+    GIT_TAG        v0.1.0
+    GIT_SHALLOW    TRUE
+  )
 endif()
-set(_LIBTAPTO_PIN_SEEN "${LIBTAPTO_PIN}" CACHE INTERNAL "the pin LIBTAPTO_TAG last followed")
-# A -DLIBTAPTO_TAG=... without a type leaves the entry UNINITIALIZED.
-set_property(CACHE LIBTAPTO_TAG PROPERTY TYPE STRING)
-set_property(CACHE LIBTAPTO_TAG PROPERTY HELPSTRING
-  "libtapto version to build against; follows LIBTAPTO_PIN unless set to another")
-FetchContent_Declare(libtapto
-  GIT_REPOSITORY https://github.com/centlakestefan/libtapto.git
-  GIT_TAG        ${LIBTAPTO_TAG}
-  GIT_SHALLOW    TRUE
-)
+FetchContent_MakeAvailable(tapto-cmake)
+include(${tapto-cmake_SOURCE_DIR}/TaptoPin.cmake)
 # Where install() puts the plugins outside Windows: lib/tapto-code/plugins,
 # where an installed tapto-code looks for them. libtapto's default names the
 # top-level project, which in the installer's build is tapto-code-install.
 if(NOT WIN32)
   set(TAPTO_PLUGIN_INSTALL_DIR "lib/tapto-code/plugins")
 endif()
-FetchContent_MakeAvailable(libtapto)
+tapto_pin(libtapto
+  GIT_REPOSITORY https://github.com/centlakestefan/libtapto.git
+  PIN            v0.9.1
+)
 
 # --- Version stamp ----------------------------------------------------------
 # Puts the version and the originating commit into the binary, so `version` and

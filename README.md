@@ -56,11 +56,24 @@ provider resolution, and the three provider clients (Claude, OpenAI-compatible,
 Gemini) with the agent loop inside — is one static library, **libtapto**,
 fetched at a pinned tag from [its own repository](https://github.com/centlakestefan/libtapto)
 and shared with tapto-word, tapto-vnc and their siblings; a fix lands there once
-and each program takes it by bumping `LIBTAPTO_TAG`. What is this program's own: the tool table (`src/tools.cpp`), the
+and each program takes it by bumping its pin. What is this program's own: the tool table (`src/tools.cpp`), the
 allow-listed commands, the CLI and chat loop, and `src/ui.cpp`, which gives the
 `tapto::ui` functions the library declares their terminal bodies.
 
 The library's unit tests run under `ctest` alongside this program's.
+
+The pin is `PIN` in the `tapto_pin(libtapto ...)` call in `CMakeLists.txt`
+([tapto-cmake](https://github.com/centlakestefan/tapto-cmake)); an existing build
+folder follows it when it moves. To work on libtapto and tapto-code together,
+point the build at your checkouts:
+
+```sh
+cmake -S . -B build -DTAPTO_SIBLINGS=C:/proj   # uses C:/proj/libtapto and C:/proj/tapto-cmake
+```
+
+The configure step says how far the checkout is from the pin, and warns when it
+lacks the pinned commit. `-DLIBTAPTO_TAG=main` builds an unreleased library
+instead, and `-DTAPTO_PIN_STRICT=ON` refuses anything but the pin.
 
 ### Dependencies
 
