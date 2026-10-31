@@ -66,6 +66,12 @@ FetchContent_Declare(libtapto
   GIT_TAG        ${LIBTAPTO_TAG}
   GIT_SHALLOW    TRUE
 )
+# Where install() puts the plugins outside Windows: lib/tapto-code/plugins,
+# where an installed tapto-code looks for them. libtapto's default names the
+# top-level project, which in the installer's build is tapto-code-install.
+if(NOT WIN32)
+  set(TAPTO_PLUGIN_INSTALL_DIR "lib/tapto-code/plugins")
+endif()
 FetchContent_MakeAvailable(libtapto)
 
 # --- Version stamp ----------------------------------------------------------
