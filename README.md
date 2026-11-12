@@ -227,10 +227,19 @@ commands below.
 **Multi-line prompts.** End a line in a backslash and press Enter to keep the
 prompt going on the next line (as in a shell); press Enter on a line without
 one to send it. Most terminals send Shift-Enter as plain Enter, so the
-backslash is the way to type a line break into a message. Pasted text keeps
-its own line breaks, and is sent as one message. The prompt also has the arrow
-keys, Home, End, Delete and Ctrl-A/E/B/F, and Up and Down recall earlier
-prompts; what you were typing comes back when you return to it.
+backslash is the way to type a line break into a message. A line ending in a
+Windows path (`C:\temp\`, `\\server\share\`) is sent as it is: there the
+backslash belongs to the path. Pasted text keeps its own line breaks, and is
+sent as one message.
+
+**Editing the prompt.** The arrow keys, Home, End and Delete work as usual, and
+Ctrl-Left and Ctrl-Right move by the word. Up and Down recall earlier prompts;
+what you were typing comes back when you return to it. The shell keys work
+too: Ctrl-A and Ctrl-E go to the start and end, Ctrl-B and Ctrl-F move by a
+character, Ctrl-K deletes to the end of the line, Ctrl-U to its start, Ctrl-W
+the word before the cursor, and Ctrl-Y puts back what was deleted last. Tab
+completes a `/` command or a folder path; when it cannot complete any further,
+it lists the matches below the line.
 
 **Resuming a conversation.** After every turn the conversation is saved to
 `session.json` beside the folder's local config (under `~/.tapto/projects`,

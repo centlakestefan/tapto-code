@@ -110,18 +110,19 @@ newer build never looks older than the one it replaces.
   config. `config set` takes such keys.
 - A prompt can run over several lines as you type it: end a line in a
   backslash and press Enter to go on to the next line, and press Enter on a
-  line without one to send it.
+  line without one to send it. A line ending in a Windows path such as
+  `C:\temp\` or `\\server\share\` is sent as it is.
 - Tab completes as you type at the prompt: the `/` commands (`/add`,
-  `/res`, …) and a folder path (`/add-folder ./`, `C:\proj\t`, …) — a
-  directory gets a trailing `\` (Windows) or `/` (Linux) so Tab takes you
-  one step at a time. When several matches share no common prefix, a second
-  Tab shows them below the line.
+  `/res`, …) and a folder path (`/add-folder ./`, `C:\proj\t`, …). Once
+  only one folder matches, it gets a trailing `\` (Windows) or `/` (Linux
+  and macOS), so Tab takes you one step at a time. When Tab cannot complete
+  any further, it shows the matches below the line.
 - The prompt line now has the standard delete keys alongside the cursor
   moves it already had: Ctrl-K clears to the end of the line, Ctrl-U clears
   to the start, Ctrl-W deletes the word before the cursor, and Ctrl-Y puts
-  the last deletion back. Ctrl-Left and Ctrl-Right move by the word instead
-  of by the character. A long line wraps at a word boundary rather than in
-  the middle of a word.
+  back what you deleted last (several deletions in a row come back as one).
+  Ctrl-Left and Ctrl-Right move by the word instead of by the character. A
+  long line wraps at a word boundary rather than in the middle of a word.
 
 ### Changed
 

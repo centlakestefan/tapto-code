@@ -1267,14 +1267,15 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
     std::string line; // the line being edited
     size_t pos = 0;   // cursor, in bytes inside `line`, always a char boundary
     // What Ctrl-K / Ctrl-U / Ctrl-W last killed: Ctrl-Y puts it back at the
-    // cursor. Each kill appends to it, so a series of kills is yanked back in
-    // one piece, as readline does.
+    // cursor. Kills in a row join, so a series of them is put back in one
+    // piece, as readline does; `last_was_kill` says the previous key was one.
     std::string kill;
+    bool last_was_kill = false;
     // Tab completion: when there is nothing more to complete (the matches
     // share no prefix beyond what is already typed), the matches to show
-    // below the line, as bash does. Empty (and not shown) the moment the
-    // word changes; reprint erases the rows below the block, so the list
-    // disappears on the next keystroke.
+    // below the line, as bash does. Shown only by the redraw the Tab asks
+    // for (show_candidates); the next redraw erases the rows below the
+    // block, so the list disappears on the next keystroke.
     std::vector<std::string> last_tab_candidates;
     std::string paste;
     bool in_paste = false;
@@ -1443,9 +1444,8 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
         pos = start;
     };
 
-    // Move the cursor one word left: back over the word the cursor is in or
-    // at the start of, then over the separators before it, to the end of the
-    // previous word (or the line's start). Separators are spaces and path
+    // Move the cursor one word left: back over the separators before it, then
+    // over the word before those, to that word's start (or the line's start). Separators are spaces and path
     // separators, so a path component is one word.
     auto word_left = [&]() {
         auto is_sep = [](unsigned char c) { return c == ' ' || c == '/' || c == '\\'; };
@@ -1509,8 +1509,8 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
     // subdirectories of the directory before its last separator (the current
     // directory for a bare fragment, the root for a bare leading /, ~ expanded
     // for a leading tilde). The longest common prefix of all matches replaces
-    // the fragment after that separator, and a directory gets a trailing /;
-    // type more to disambiguate. When the matches share no prefix beyond what
+    // the fragment after that separator, and a single match gets a trailing
+    // separator; type more to disambiguate. When the matches share no prefix beyond what
     // is already typed, they are shown below the line (as bash does); the
     // list disappears on the next keystroke.
     auto tab_complete = [&]() {
@@ -1555,27 +1555,24 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
             // directories when the user types /add-folder .).
             if (fragname == "." || fragname == "..") return;
             if (!basedir.empty() && basedir[0] == '~') {
-#ifdef _WIN32
-#pragma warning(push)
-#pragma warning(disable : 4996) // std::getenv is the portable, intended call here
-                const char* home = std::getenv("USERPROFILE");
-#pragma warning(pop)
-#else
-                const char* home = std::getenv("HOME");
-#endif
-                if (!home) return;
-                basedir = std::string(home) + basedir.substr(1); // ~ -> home, ~/x -> home/x
+                // The home folder as libtapto finds it: the parent of ~/.tapto.
+                const std::string home = global_dir().parent_path().u8string();
+                if (home.empty()) return;
+                basedir = home + basedir.substr(1); // ~ -> home, ~/x -> home/x
             }
+            // The line is UTF-8, so names cross into and out of the file
+            // system through u8path and u8string. The plain conversions use
+            // the ANSI code page on Windows: they misread a name like
+            // "Överföring", and throw on one the code page cannot hold.
+            namespace fs = std::filesystem;
+            const fs::path base = fs::u8path(basedir);
             std::error_code ec;
-            if (!std::filesystem::is_directory(std::filesystem::path(basedir), ec)) return;
-            std::error_code iter_ec;
-            for (std::filesystem::directory_iterator it(basedir, iter_ec);
-                 it != std::filesystem::directory_iterator{}; it.increment(iter_ec)) {
-                if (iter_ec) break;
-                std::error_code ec2;
-                if (!it->is_directory(ec2)) continue;
-                if (it->path().filename().string().rfind(fragname, 0) == 0)
-                    candidates.push_back(it->path().filename().string());
+            if (!fs::is_directory(base, ec)) return;
+            for (fs::directory_iterator it(base, ec), end; !ec && it != end; it.increment(ec)) {
+                std::error_code dir_ec;
+                if (!it->is_directory(dir_ec)) continue;
+                std::string name = it->path().filename().u8string();
+                if (name.rfind(fragname, 0) == 0) candidates.push_back(std::move(name));
             }
             std::sort(candidates.begin(), candidates.end());
         }
@@ -1586,15 +1583,20 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
             while (j < lcp.size() && j < candidates[i].size() && lcp[j] == candidates[i][j]) ++j;
             lcp = lcp.substr(0, j);
         }
-        if (!is_command && !lcp.empty()) {
-            std::error_code ec;
-            if (std::filesystem::is_directory(std::filesystem::path(basedir) / lcp, ec)) {
+        // Names that differ inside a multi-byte character share only part of
+        // it: back off to the character's start, so the line stays UTF-8.
+        while (!lcp.empty() && lcp.size() < candidates[0].size() &&
+               (static_cast<unsigned char>(candidates[0][lcp.size()]) & 0xC0) == 0x80)
+            lcp.pop_back();
+        // One match is the folder: its separator invites the next step. With
+        // more, the common prefix may be only part of a name ("src" of "src"
+        // and "src2"), and a separator would rule the others out.
+        if (!is_command && candidates.size() == 1) {
 #ifdef _WIN32
-                lcp += '\\'; // a directory: the trailing separator invites the next step
+            lcp += '\\';
 #else
-                lcp += '/';
+            lcp += '/';
 #endif
-            }
         }
         if (lcp.size() > fragname.size()) {
             // Extend the word to the matches' common prefix; the list (if any)
@@ -1619,6 +1621,9 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
         // when it is pressed, so a blocking read waits for exactly that.
         int b = term.read_byte(true);
         if (b < 0) break; // EOF
+        // Whether the key before this one was a kill (see the kills below).
+        const bool kill_continues = last_was_kill;
+        last_was_kill = false;
 #ifdef _WIN32
         const bool after_paste_cr = paste_cr;
         paste_cr = false;
@@ -1748,7 +1753,21 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
             if (pos > 0) { del_char_at(pos); reprint(); }
             continue;
         }
-        if (b == '\t') { tab_complete(); continue; } // Tab: complete the word
+        if (b == '\t') {
+            // Tab completes the word, unless more input is queued behind it:
+            // then it is a tab in a paste from a terminal that sends no paste
+            // markers (a Windows console types a paste in as keys), and it
+            // goes into the line as a bracketed paste's tabs do, instead of
+            // completing words in the pasted text.
+            if (term.input_ready()) {
+                line.insert(pos, 1, '\t');
+                ++pos;
+                reprint();
+            } else {
+                tab_complete();
+            }
+            continue;
+        }
         if (b == 4) { // Ctrl-D
             if (pos == line.size() && !line.empty()) return submit(); // as in cooked mode
             if (line.empty()) break;                // EOF at an empty line
@@ -1773,17 +1792,25 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
             if (pos < line.size()) { pos = next_char(line, pos); reprint(); }
             continue;
         }
-        if (b == 11) { // Ctrl-K: kill to the end of the line
-            kill.append(line, pos, std::string::npos);
-            line.erase(pos);
+        // The kills. One that follows another joins it, the text in the
+        // order it stood in the line: a forward kill goes after what was
+        // killed, a backward one before it. Any other key in between starts
+        // the next kill afresh.
+        auto kill_text = [&](size_t start, size_t end, bool backward) {
+            if (!kill_continues) kill.clear();
+            const std::string text = line.substr(start, end - start);
+            kill = backward ? text + kill : kill + text;
+            line.erase(start, end - start);
+            pos = start;
+            last_was_kill = true;
             reprint();
+        };
+        if (b == 11) { // Ctrl-K: kill to the end of the line
+            if (pos < line.size()) kill_text(pos, line.size(), false);
             continue;
         }
         if (b == 21) { // Ctrl-U: kill to the start of the line
-            kill.append(line, 0, pos); // kill-append, like Ctrl-K: time-ordered
-            line.erase(0, pos);
-            pos = 0;
-            reprint();
+            if (pos > 0) kill_text(0, pos, true);
             continue;
         }
         if (b == 23) { // Ctrl-W: kill the word before the cursor, its spaces too
@@ -1796,18 +1823,16 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
                     if (line[s] == ' ') break; // the next word stops here
                     start = s;
                 }
-                kill.append(line, start, pos - start);
-                line.erase(start, pos - start);
-                pos = start;
-                reprint();
+                kill_text(start, pos, true);
             }
             continue;
         }
-        if (b == 25 && !kill.empty()) { // Ctrl-Y: yank the kill back
-            line.insert(pos, kill);
-            pos += kill.size();
-            kill.clear();
-            reprint();
+        if (b == 25) { // Ctrl-Y: put the last kill back at the cursor; it stays, to put back again
+            if (!kill.empty()) {
+                line.insert(pos, kill);
+                pos += kill.size();
+                reprint();
+            }
             continue;
         }
         if (b < 0x20) continue; // other controls: dropped
