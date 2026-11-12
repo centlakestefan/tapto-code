@@ -52,7 +52,7 @@ if(NOT WIN32)
 endif()
 tapto_pin(libtapto
   GIT_REPOSITORY https://github.com/centlakestefan/libtapto.git
-  PIN            v0.9.3
+  PIN            v0.9.4
 )
 
 # --- Version stamp ----------------------------------------------------------
