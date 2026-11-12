@@ -32,11 +32,13 @@
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <map>
 #include <memory>
 #include <optional>
 #include <sstream>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #ifdef _WIN32
@@ -1022,11 +1024,12 @@ private:
         if (c == 0) {
             // No character: an editing key from a console without VT input,
             // or a key that types nothing (Shift, a function key).
+            const bool ctrl = k.dwControlKeyState & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED);
             switch (k.wVirtualKeyCode) {
             case VK_UP:     bytes = "\x1b[A"; break;
             case VK_DOWN:   bytes = "\x1b[B"; break;
-            case VK_RIGHT:  bytes = "\x1b[C"; break;
-            case VK_LEFT:   bytes = "\x1b[D"; break;
+            case VK_RIGHT:  bytes = ctrl ? "\x1b[1;5C" : "\x1b[C"; break;
+            case VK_LEFT:   bytes = ctrl ? "\x1b[1;5D" : "\x1b[D"; break;
             case VK_HOME:   bytes = "\x1b[H"; break;
             case VK_END:    bytes = "\x1b[F"; break;
             case VK_DELETE: bytes = "\x1b[3~"; break;
@@ -1204,6 +1207,44 @@ enum class EditResult {
     NoTerminal,  // stdin is no terminal the editor can drive; read it another way
 };
 
+// Write one block of bytes to stdout with a single write, so the terminal
+// paints it in one frame. The editor's redraws contain the newlines that make
+// std::cout flush partway through -- it is line-buffered when attached to a
+// terminal -- and that mid-frame repaint is the flicker. A lone write()
+// (POSIX) or WriteFile (Windows console) hands the whole frame over at once.
+// Returns false when the bytes did not all go out; the editor ignores that
+// since its state is what the terminal is supposed to show, not what stdout
+// reported.
+bool write_frame(const std::string& s) {
+#ifdef _WIN32
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (out == INVALID_HANDLE_VALUE) return false;
+    DWORD written = 0;
+    while (written < s.size()) {
+        DWORD step = static_cast<DWORD>(
+                         std::min(static_cast<size_t>(INT32_MAX), s.size() - written));
+        DWORD w = 0;
+        if (!WriteFile(out, s.data() + written, step, &w, nullptr) || w == 0)
+            return false;
+        written += w;
+    }
+    return true;
+#else
+    const unsigned char* p = reinterpret_cast<const unsigned char*>(s.data());
+    size_t left = s.size();
+    while (left) {
+        ssize_t n = write(STDOUT_FILENO, p, left);
+        if (n < 0) {
+            if (errno == EINTR) continue; // interrupted; try again
+            return false;
+        }
+        p += n;
+        left -= static_cast<size_t>(n);
+    }
+    return true;
+#endif
+}
+
 // Read one line from a terminal, with the program doing its own line
 // editing (echo off). The arrow keys' ESC sequences are consumed as cursor
 // moves and history recall instead of being recorded as "[A" and friends.
@@ -1225,6 +1266,16 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
 
     std::string line; // the line being edited
     size_t pos = 0;   // cursor, in bytes inside `line`, always a char boundary
+    // What Ctrl-K / Ctrl-U / Ctrl-W last killed: Ctrl-Y puts it back at the
+    // cursor. Each kill appends to it, so a series of kills is yanked back in
+    // one piece, as readline does.
+    std::string kill;
+    // Tab completion: when there is nothing more to complete (the matches
+    // share no prefix beyond what is already typed), the matches to show
+    // below the line, as bash does. Empty (and not shown) the moment the
+    // word changes; reprint erases the rows below the block, so the list
+    // disappears on the next keystroke.
+    std::vector<std::string> last_tab_candidates;
     std::string paste;
     bool in_paste = false;
 #ifdef _WIN32
@@ -1259,19 +1310,32 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
     // The screen row the cursor is on, counted from the block's first row (the
     // prompt's), so a reprint can move back up to the top before clearing.
     size_t cursor_row = 0;
+    // One-shot: reprint prints last_tab_candidates below the line and clears
+    // this, so the list is shown only by the Tab that asked for it and is
+    // erased by the next redraw (reprint always clears the rows below the
+    // block).
+    bool show_candidates = false;
     // The chat loop shows the cursor at the prompt (\x1b[?25h) and hides it
     // while the model works, so a reprint must leave it visible: an erase
     // that leaves the cursor where it hid would hide it again. Starts shown
     // because the prompt is printed with the cursor visible.
     static bool cursor_shown = true;
-    // Redraw the prompt and the whole line, then put the cursor at the edit
-    // position. The block is cleared from its first row down before it is
-    // drawn, so no stale character survives a redraw.
+    // Redraw the prompt and the line, then put the cursor at the edit
+    // position. The whole redraw is built into one string and sent as a
+    // single write: std::cout is line-buffered when attached to a terminal,
+    // so if the redraw were written piece by piece every "\n" in it would
+    // flush partway through and the terminal would repaint several times per
+    // keystroke -- the flicker. One write paints it once. The block is
+    // cleared from its first row down before it is drawn, so no stale
+    // character survives a redraw.
     auto reprint = [&]() {
-        if (cursor_row) std::cout << "\x1b[" << cursor_row << "A";
-        std::cout << "\r\x1b[J";
+        const bool show = show_candidates; // consumed below
+        show_candidates = false;
+        std::string buf;
+        if (cursor_row) buf += "\x1b[" + std::to_string(cursor_row) + "A";
+        buf += "\r\x1b[J";
         if (!cursor_shown) {
-            std::cout << "\x1b[?25h";
+            buf += "\x1b[?25h";
             cursor_shown = true;
         }
         size_t used = 0; // columns used on the current row
@@ -1284,13 +1348,15 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
             // length, so the escapes don't skew the wrap math. Each segment is
             // color + reset, so a reprint can break out early (cursor before
             // the line's end) without leaving the terminal colored.
-            std::cout << kPromptColor << prompt_text << kPromptReset;
+            buf += kPromptColor;
+            buf += prompt_text;
+            buf += kPromptReset;
             used = prompt_text.size();
         };
         // The row is full: move down to the next one, already empty (cleared
         // above), and start it with the prompt again.
         auto wrap = [&]() {
-            std::cout << "\n";
+            buf += "\n";
             ++row;
             start_line();
         };
@@ -1301,16 +1367,32 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
             size_t adv = next_char(line, i) - i;
             if (line[i] == '\n') { // a pasted line break: next row, plain (no prompt)
                 if (i == pos) { cur_row = row; cur_col = used; }
-                std::cout << "\n";
+                buf += "\n";
                 ++row;
                 used = 0;
                 i += adv;
                 continue;
             }
+            // Wrap at a word boundary, not mid-word: when the word starting
+            // here does not fit in the columns left on this row, move the whole
+            // word to the next row. A word wider than a row is the only thing
+            // that gets hard-broken, by the per-column check just below.
+            if (i == 0 || line[i - 1] == ' ' || line[i - 1] == '\n') {
+                size_t we = i, ww = 0;
+                while (we < line.size() && line[we] != ' ' && line[we] != '\n') {
+                    size_t a = next_char(line, we) - we;
+                    ww += display_cols(line, we, a);
+                    we += a;
+                }
+                if (used + ww > cols && ww <= cols)
+                    wrap();
+            }
             size_t w = display_cols(line, i, adv);
             if (used + w > cols) wrap();
             if (i == pos) { cur_row = row; cur_col = used; }
-            std::cout << kPromptColor << line.substr(i, adv) << kPromptReset;
+            buf += kPromptColor;
+            buf.append(line, i, adv);
+            buf += kPromptReset;
             used += w;
             i += adv;
         }
@@ -1322,12 +1404,36 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
             cur_row = row;
             cur_col = used;
         }
-        // From the end of the drawing back to the edit position.
-        if (row > cur_row) std::cout << "\x1b[" << (row - cur_row) << "A";
-        std::cout << "\r";
-        if (cur_col) std::cout << "\x1b[" << cur_col << "C";
+        // From the end of the drawing back to the edit position. When a
+        // candidate list is requested (a repeat Tab), print it below the
+        // block first -- still in this one frame, so the line and the list
+        // paint in a single write -- and bring the cursor back to the edit
+        // position afterwards.
+        if (show && !last_tab_candidates.empty()) {
+            buf += "\r"; // the block's last row, column 0
+            buf += "\n"; // the row below it
+            constexpr const char* kDim = "\x1b[2m";
+            constexpr const char* kRst = "\x1b[0m";
+            constexpr size_t kMaxList = 12; // do not flood the screen
+            for (size_t c = 0; c < last_tab_candidates.size() && c < kMaxList; ++c)
+                buf += std::string(kDim) + last_tab_candidates[c] + kRst + "\n";
+            const size_t shown =
+                std::min(last_tab_candidates.size(), kMaxList);
+            if (last_tab_candidates.size() > kMaxList)
+                buf += std::string(kDim) + "…" + kRst + "\n";
+            // The pen is now `shown` (+ 1 for the …) rows below the block;
+            // back up to the edit position.
+            const size_t lines = shown + (last_tab_candidates.size() > kMaxList ? 1 : 0);
+            buf += "\x1b[" + std::to_string(row + 1 + lines - cur_row) + "A";
+            buf += "\r";
+            if (cur_col) buf += "\x1b[" + std::to_string(cur_col) + "C";
+        } else {
+            if (row > cur_row) buf += "\x1b[" + std::to_string(row - cur_row) + "A";
+            buf += "\r";
+            if (cur_col) buf += "\x1b[" + std::to_string(cur_col) + "C";
+        }
         cursor_row = cur_row;
-        std::cout << std::flush;
+        write_frame(buf); // one frame: no mid-redraw flush
     };
 
     // Delete the character before `at`, and put the cursor where it was.
@@ -1335,6 +1441,33 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
         size_t start = prev_char_start(at);
         line.erase(start, at - start);
         pos = start;
+    };
+
+    // Move the cursor one word left: back over the word the cursor is in or
+    // at the start of, then over the separators before it, to the end of the
+    // previous word (or the line's start). Separators are spaces and path
+    // separators, so a path component is one word.
+    auto word_left = [&]() {
+        auto is_sep = [](unsigned char c) { return c == ' ' || c == '/' || c == '\\'; };
+        size_t p = pos;
+        while (p > 0 && is_sep(static_cast<unsigned char>(line[p - 1]))) --p;
+        while (p > 0 && !is_sep(static_cast<unsigned char>(line[p - 1]))) --p;
+        pos = p;
+        reprint();
+    };
+
+    // Move the cursor one word right: forward over the word the cursor is in,
+    // then over the separators after it, to the start of the next word
+    // (or the line's end).
+    auto word_right = [&]() {
+        auto is_sep = [](unsigned char c) { return c == ' ' || c == '/' || c == '\\'; };
+        size_t p = pos;
+        while (p < line.size() && !is_sep(static_cast<unsigned char>(line[p])))
+            p = next_char(line, p);
+        while (p < line.size() && is_sep(static_cast<unsigned char>(line[p])))
+            p = next_char(line, p);
+        pos = p;
+        reprint();
     };
 
     // Move to history position `np` (0: the fresh line), keeping the line as
@@ -1367,6 +1500,118 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
         }
         out = std::move(line);
         return EditResult::Line;
+    };
+
+    // Tab: complete the word under the cursor. The word is the run of
+    // characters from the last whitespace (or line start) to the cursor. A
+    // word that is a prefix of one of the slash commands this prompt accepts
+    // completes against them; otherwise it is a path, completed against the
+    // subdirectories of the directory before its last separator (the current
+    // directory for a bare fragment, the root for a bare leading /, ~ expanded
+    // for a leading tilde). The longest common prefix of all matches replaces
+    // the fragment after that separator, and a directory gets a trailing /;
+    // type more to disambiguate. When the matches share no prefix beyond what
+    // is already typed, they are shown below the line (as bash does); the
+    // list disappears on the next keystroke.
+    auto tab_complete = [&]() {
+        static const std::vector<std::string> kCommands = {
+            "/clear", "/compact", "/resume", "/cot", "/effort", "/env",
+            "/list-commands", "/add-command", "/add-folder",
+            "/remove-folder", "/list-folders", "/add-plugin",
+            "/remove-plugin", "/list-plugins", "/help", "/exit", "/quit",
+        };
+        size_t ws = pos;
+        while (ws > 0 && line[ws - 1] != ' ' && line[ws - 1] != '\n') --ws;
+        std::string word = line.substr(ws, pos - ws);
+        std::vector<std::string> candidates;
+        size_t frag = 0;                 // start of the word's fragment
+        std::string fragname = word;     // the fragment (what is completed)
+        std::string basedir;             // the directory to list (path case)
+        // A slash command wins over a path only when the word is actually a
+        // command prefix: an absolute path such as /usr/share has no such
+        // command, so it completes as a path instead.
+        bool is_command = false;
+        if (word.size() > 1 && word[0] == '/')
+            for (const auto& c : kCommands)
+                if (c.rfind(word, 0) == 0) { is_command = true; break; }
+        if (is_command) {
+            for (const auto& c : kCommands)
+                if (c.rfind(word, 0) == 0) candidates.push_back(c);
+        } else {
+            auto sep = word.find_last_of("/\\");
+            if (sep != std::string::npos) {
+                frag = sep + 1;
+                fragname = word.substr(frag);
+                // The base directory keeps its own separator: "d:\" is the
+                // root of D, not "d:" (the current directory on drive D).
+                basedir = word.substr(0, sep + 1);
+            } else if (word[0] == '~') {
+                basedir = "~";
+            } else {
+                basedir = ".";
+            }
+            // . and .. are literal relative references, not fragments to
+            // complete: leave them alone (also keeps Tab from listing hidden
+            // directories when the user types /add-folder .).
+            if (fragname == "." || fragname == "..") return;
+            if (!basedir.empty() && basedir[0] == '~') {
+#ifdef _WIN32
+#pragma warning(push)
+#pragma warning(disable : 4996) // std::getenv is the portable, intended call here
+                const char* home = std::getenv("USERPROFILE");
+#pragma warning(pop)
+#else
+                const char* home = std::getenv("HOME");
+#endif
+                if (!home) return;
+                basedir = std::string(home) + basedir.substr(1); // ~ -> home, ~/x -> home/x
+            }
+            std::error_code ec;
+            if (!std::filesystem::is_directory(std::filesystem::path(basedir), ec)) return;
+            std::error_code iter_ec;
+            for (std::filesystem::directory_iterator it(basedir, iter_ec);
+                 it != std::filesystem::directory_iterator{}; it.increment(iter_ec)) {
+                if (iter_ec) break;
+                std::error_code ec2;
+                if (!it->is_directory(ec2)) continue;
+                if (it->path().filename().string().rfind(fragname, 0) == 0)
+                    candidates.push_back(it->path().filename().string());
+            }
+            std::sort(candidates.begin(), candidates.end());
+        }
+        if (candidates.empty()) return;
+        std::string lcp = candidates[0];
+        for (size_t i = 1; i < candidates.size(); ++i) {
+            size_t j = 0;
+            while (j < lcp.size() && j < candidates[i].size() && lcp[j] == candidates[i][j]) ++j;
+            lcp = lcp.substr(0, j);
+        }
+        if (!is_command && !lcp.empty()) {
+            std::error_code ec;
+            if (std::filesystem::is_directory(std::filesystem::path(basedir) / lcp, ec)) {
+#ifdef _WIN32
+                lcp += '\\'; // a directory: the trailing separator invites the next step
+#else
+                lcp += '/';
+#endif
+            }
+        }
+        if (lcp.size() > fragname.size()) {
+            // Extend the word to the matches' common prefix; the list (if any)
+            // is cleared by the redraw, and a further Tab will show it once
+            // the common prefix runs out.
+            line.replace(ws + frag, fragname.size(), lcp);
+            pos = ws + frag + lcp.size();
+            show_candidates = false;
+            reprint();
+        } else if (candidates.size() >= 2) {
+            // Nothing more to complete (the matches share no prefix beyond
+            // what is typed): show them below the line, as bash does. The
+            // next keystroke clears the list.
+            last_tab_candidates = candidates;
+            show_candidates = true;
+            reprint();
+        }
     };
 
     for (;;) {
@@ -1422,6 +1667,10 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
                 if (pos > 0) { pos = prev_char_start(pos); reprint(); }
             } else if (seq == "\x1b[C" || seq == "\x1b[1C" || seq == "\x1bOC") { // right
                 if (pos < line.size()) { pos = next_char(line, pos); reprint(); }
+            } else if (seq == "\x1b[1;5D") { // Ctrl+left: the word to the left
+                word_left();
+            } else if (seq == "\x1b[1;5C") { // Ctrl+right: the word to the right
+                word_right();
             } else if (seq == "\x1b[H" || seq == "\x1b[1H" || seq == "\x1bOH" ||
                        seq == "\x1b[1~") { // home
                 pos = 0;
@@ -1466,10 +1715,27 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
             // A line that ends in a backslash goes on to the next row, as in a
             // shell: the backslash becomes the line break, and the cursor
             // goes to the end of the line. An even number of them are
-            // backslashes meant as such, and the line is sent.
+            // backslashes meant as such, and the line is sent. A trailing
+            // backslash in a Windows path (d:\, \\server\) is a separator,
+            // not a continuation marker: submit instead.
             size_t backslashes = 0;
             while (backslashes < line.size() && line[line.size() - 1 - backslashes] == '\\')
                 ++backslashes;
+            // Last word: from the last space (or line start) to the end.
+            size_t wstart = line.size();
+            while (wstart > 0 && line[wstart - 1] != ' ' && line[wstart - 1] != '\n') --wstart;
+            std::string last_word = line.substr(wstart);
+            // A drive-letter path (d:\, c:\PROGRA~1\...) or a UNC path
+            // (\\server\share\...): its trailing backslash is a separator, so
+            // submit rather than continue.
+            const bool drive = last_word.size() >= 3 &&
+                ((last_word[0] >= 'a' && last_word[0] <= 'z') ||
+                 (last_word[0] >= 'A' && last_word[0] <= 'Z')) &&
+                last_word[1] == ':';
+            const bool unc = last_word.size() >= 2 &&
+                last_word[0] == '\\' && last_word[1] == '\\';
+            if (drive || unc)
+                return submit();
             if (backslashes % 2 == 1) {
                 line.back() = '\n';
                 pos = line.size();
@@ -1482,6 +1748,7 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
             if (pos > 0) { del_char_at(pos); reprint(); }
             continue;
         }
+        if (b == '\t') { tab_complete(); continue; } // Tab: complete the word
         if (b == 4) { // Ctrl-D
             if (pos == line.size() && !line.empty()) return submit(); // as in cooked mode
             if (line.empty()) break;                // EOF at an empty line
@@ -1504,6 +1771,43 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
         }
         if (b == 6) { // Ctrl-F: right
             if (pos < line.size()) { pos = next_char(line, pos); reprint(); }
+            continue;
+        }
+        if (b == 11) { // Ctrl-K: kill to the end of the line
+            kill.append(line, pos, std::string::npos);
+            line.erase(pos);
+            reprint();
+            continue;
+        }
+        if (b == 21) { // Ctrl-U: kill to the start of the line
+            kill.append(line, 0, pos); // kill-append, like Ctrl-K: time-ordered
+            line.erase(0, pos);
+            pos = 0;
+            reprint();
+            continue;
+        }
+        if (b == 23) { // Ctrl-W: kill the word before the cursor, its spaces too
+            if (pos > 0) {
+                size_t start = pos;
+                // Back over the spaces, then over the word itself.
+                while (start > 0 && line[start - 1] == ' ') start = prev_char_start(start);
+                while (start > 0) {
+                    size_t s = prev_char_start(start);
+                    if (line[s] == ' ') break; // the next word stops here
+                    start = s;
+                }
+                kill.append(line, start, pos - start);
+                line.erase(start, pos - start);
+                pos = start;
+                reprint();
+            }
+            continue;
+        }
+        if (b == 25 && !kill.empty()) { // Ctrl-Y: yank the kill back
+            line.insert(pos, kill);
+            pos += kill.size();
+            kill.clear();
+            reprint();
             continue;
         }
         if (b < 0x20) continue; // other controls: dropped

@@ -111,6 +111,17 @@ newer build never looks older than the one it replaces.
 - A prompt can run over several lines as you type it: end a line in a
   backslash and press Enter to go on to the next line, and press Enter on a
   line without one to send it.
+- Tab completes as you type at the prompt: the `/` commands (`/add`,
+  `/res`, …) and a folder path (`/add-folder ./`, `C:\proj\t`, …) — a
+  directory gets a trailing `\` (Windows) or `/` (Linux) so Tab takes you
+  one step at a time. When several matches share no common prefix, a second
+  Tab shows them below the line.
+- The prompt line now has the standard delete keys alongside the cursor
+  moves it already had: Ctrl-K clears to the end of the line, Ctrl-U clears
+  to the start, Ctrl-W deletes the word before the cursor, and Ctrl-Y puts
+  the last deletion back. Ctrl-Left and Ctrl-Right move by the word instead
+  of by the character. A long line wraps at a word boundary rather than in
+  the middle of a word.
 
 ### Changed
 
@@ -130,6 +141,9 @@ newer build never looks older than the one it replaces.
 
 ### Fixed
 
+- As you typed a prompt, the line could flicker: the redraw was written to
+  the terminal in small pieces, and the terminal repainted between them. The
+  line is now redrawn in one go, so typing is steady.
 - Pressing Up while writing a prompt showed an earlier prompt in its place,
   and the text you had written was gone. Down now brings it back, and a
   recalled prompt you change keeps your changes while you move through the
