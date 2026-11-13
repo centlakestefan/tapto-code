@@ -53,7 +53,7 @@ newer build never looks older than the one it replaces.
 
 ### Added
 
-- Streamed replies for the openai dialect (`stream`, on by default): the
+- Streamed replies (`stream`, on by default) for all three dialects: the
   chain of thought is written dimmed as the model thinks and the answer as it
   is written, then redrawn as Markdown in place. `read-timeout` now waits for
   a silence rather than the whole answer, and ESC stops a reply partway

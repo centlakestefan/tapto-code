@@ -116,7 +116,7 @@ const char* kUsage =
     "  after it), trace-file, connection-timeout\n"
     "  (seconds, default 30), read-timeout (seconds of silence from the server,\n"
     "  default 300; unstreamed, the whole answer), stream (optional, default\n"
-    "  true; openai dialect: show the reply as it arrives), and per provider\n"
+    "  true: show the reply as it arrives), and per provider\n"
     "  <name>-reasoning-effort (openai dialect only: low, medium, high, ...)\n"
     "\n"
     "A provider is a named block of keys, so several backends -- including two\n"
@@ -2100,7 +2100,7 @@ int cmd_chat(const std::string& requested_provider, bool resume) {
                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         ai_config.setPrintCot(!(s == "false" || s == "0" || s == "off" || s == "no"));
     }
-    // Streamed replies (openai dialect; the others ignore it): the chain of
+    // Streamed replies, every dialect: the chain of
     // thought and the text are written as they arrive, read-timeout becomes
     // the longest silence rather than the whole answer, and ESC stops a reply
     // partway through. With print-cot off nothing is shown until the reply
