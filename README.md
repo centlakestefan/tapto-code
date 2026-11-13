@@ -473,7 +473,8 @@ Chat config keys:
 | `max-output-tokens` | no   | `16000` — raise it for long replies (large tables, reports) |
 | `max-tool-iterations` | no | `200` — max tool-call rounds per reply before the agent stops |
 | `connection-timeout` | no  | `30` — seconds to wait for the provider to accept the connection |
-| `read-timeout`  | no       | `300` — seconds to wait for the whole answer; the reply is not streamed, so raise it for a slow local model (a timeout shorter than the generation retries the same request until the retry budget is spent) |
+| `read-timeout`  | no       | `300` — seconds to wait while the server sends nothing. A streamed reply (`stream`) arrives in pieces, so this is in practice the wait for the first one; unstreamed, it is the whole answer, so raise it for a slow local model (a timeout shorter than the generation retries the same request until the retry budget is spent) |
+| `stream`        | no       | `true` — **openai** dialect: the reply is shown as it arrives, the chain of thought dimmed and the answer redrawn as Markdown when it is complete, and ESC stops it partway through; `false` waits for the whole reply. The other dialects ignore it |
 | `print-cot`     | no       | `true` — show the model's intermediate reasoning/text during tool calls; set `false` to keep it in the trace file only |
 | `system-prompt` | no       | built-in prompt — replaces it with a one-line value  |
 | `system-prompt-file` | no  | unset — replaces the built-in prompt with a text file's contents (see below) |

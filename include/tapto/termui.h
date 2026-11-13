@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "tapto/session.h"
+#include "tapto/stream.h"
 #include "tapto/ui.h"
 
 // ---------------------------------------------------------------------------
@@ -33,8 +34,18 @@ namespace tapto::ui {
 inline constexpr const char* kPromptColor = "\x1b[33m";
 inline constexpr const char* kPromptReset = "\x1b[0m";
 
-// Print the model's final reply (plain, no prefix).
+// Print the model's final reply (plain, no prefix). When the reply was
+// streamed (print_stream), it is on the screen already: its plain text is
+// redrawn as Markdown in place while all of it is in view, and otherwise left
+// as it is.
 void print_reply(const std::string& text);
+
+// Write a piece of a streamed reply as it arrives (AiConfig::setStreamCallback):
+// the chain of thought dimmed, the text plain, a line end at the end of each.
+void print_stream(const tapto::StreamEvent& ev);
+
+// Forget the streamed blocks of the turn before. Called as a turn starts.
+void begin_turn_output();
 
 // Render Markdown text to ANSI-styled terminal output. Tables are wrapped so
 // the rendered width never exceeds `max_width` visible columns (the terminal

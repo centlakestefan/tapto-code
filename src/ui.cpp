@@ -852,6 +852,30 @@ std::string render_markdown_impl(const std::string& text, size_t max_width) {
 bool        g_status_visible = false;
 std::string g_status_text;
 
+// --- Streamed reply state ---------------------------------------------------
+//
+// A streamed reply is written as it arrives: the chain of thought dimmed, the
+// text plain. What is open on the current line, and the text block last
+// written, are kept so the final reply can be redrawn as Markdown in place of
+// its plain text instead of being printed a second time.
+
+enum class StreamOpen { None, Reasoning, Text };
+StreamOpen  g_stream_open = StreamOpen::None;
+bool        g_stream_at_col0 = true;
+std::string g_stream_text;       // the text block being written, as received
+std::string g_stream_text_shown; // the same as written (tabs expanded)
+std::string g_stream_reasoning;  // the reasoning block being written
+
+// The last finished blocks of this turn, and whether the text block is still
+// what the screen ends with (nothing written since), so it can be redrawn.
+std::string g_last_text;
+std::string g_last_text_shown;
+std::string g_last_reasoning;
+unsigned    g_output_seq = 0;      // bumped by every other output during a turn
+unsigned    g_last_text_seq = ~0u; // g_output_seq when the last text block ended
+
+void note_output() { ++g_output_seq; }
+
 void erase_status_line() {
     std::cout << "\r\x1b[K";
 }
@@ -902,6 +926,7 @@ void set_status(const std::string& text, int iteration, int max_iterations) {
     g_status_text = clip_cell(iteration_prefix(iteration, max_iterations) + text,
                               kMaxWidth, visible);
 
+    note_output();
     if (!g_status_visible)
         std::cout << "\x1b[?25l"; // hide cursor while the status line is live
 
@@ -911,6 +936,7 @@ void set_status(const std::string& text, int iteration, int max_iterations) {
 
 void commit_status() {
     if (!g_status_visible) return;
+    note_output();
     std::cout << "\r" << g_status_text << "\x1b[K\n" << std::flush;
     g_status_visible = false;
     g_status_text.clear();
@@ -929,6 +955,7 @@ void end_status() {
 
 void emit_intermediate(const std::string& text, bool is_reasoning, bool print_cot) {
     if (text.empty() || !print_cot) return;
+    note_output();
     if (g_status_visible) erase_status_line();
     if (is_reasoning)
         std::cout << kDim << text << kReset << "\n" << std::flush;
@@ -936,8 +963,145 @@ void emit_intermediate(const std::string& text, bool is_reasoning, bool print_co
         std::cout << text << "\n" << std::flush;
 }
 
+namespace {
+
+std::string trimmed(const std::string& s) {
+    const auto first = s.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return "";
+    const auto last = s.find_last_not_of(" \t\r\n");
+    return s.substr(first, last - first + 1);
+}
+
+// The rows `text` took when written from column 0 of an empty line, wrapped
+// at `cols`: each of its lines at least one, a long one as many as it wraps to.
+size_t rows_taken(const std::string& text, size_t cols) {
+    cols = std::max<size_t>(cols, 1);
+    size_t rows = 0;
+    size_t start = 0;
+    while (start <= text.size()) {
+        size_t end = text.find('\n', start);
+        if (end == std::string::npos) end = text.size();
+        if (end == text.size() && start == text.size()) break; // nothing after the last newline
+        const size_t w = visible_width(text.substr(start, end - start));
+        rows += w == 0 ? 1 : (w + cols - 1) / cols;
+        start = end + 1;
+    }
+    return rows;
+}
+
+// Close whatever block is open on the current line, ending the line.
+void close_stream_block() {
+    if (!g_stream_at_col0) std::cout << "\n";
+    g_stream_at_col0 = true;
+    if (g_stream_open == StreamOpen::Text) {
+        g_last_text = g_stream_text;
+        g_last_text_shown = g_stream_text_shown;
+        g_last_text_seq = g_output_seq;
+    } else if (g_stream_open == StreamOpen::Reasoning) {
+        g_last_reasoning = g_stream_reasoning;
+    }
+    g_stream_text.clear();
+    g_stream_text_shown.clear();
+    g_stream_reasoning.clear();
+    g_stream_open = StreamOpen::None;
+}
+
+} // namespace
+
+void begin_turn_output() {
+    g_stream_open = StreamOpen::None;
+    g_stream_at_col0 = true;
+    g_stream_text.clear();
+    g_stream_text_shown.clear();
+    g_stream_reasoning.clear();
+    g_last_text.clear();
+    g_last_text_shown.clear();
+    g_last_reasoning.clear();
+    g_last_text_seq = ~0u;
+}
+
+void print_stream(const tapto::StreamEvent& ev) {
+    using Kind = tapto::StreamEvent::Kind;
+    if (ev.kind == Kind::End) {
+        close_stream_block();
+        std::cout << std::flush;
+        return;
+    }
+    if (ev.text.empty()) return;
+
+    // The first piece takes the status line's place; the status comes back
+    // with the next set_status.
+    if (g_status_visible) {
+        erase_status_line();
+        std::cout << "\x1b[?25h";
+        g_status_visible = false;
+        g_status_text.clear();
+    }
+
+    const StreamOpen kind = ev.kind == Kind::Reasoning ? StreamOpen::Reasoning : StreamOpen::Text;
+    if (g_stream_open != kind) {
+        close_stream_block();
+        g_stream_open = kind;
+    }
+
+    // Tabs are written as spaces, so the rows the block takes can be counted.
+    // Line ends a block starts with are not written: models open their
+    // answer with a blank line or two after the chain of thought.
+    const bool block_empty = kind == StreamOpen::Reasoning ? g_stream_reasoning.empty()
+                                                          : g_stream_text_shown.empty();
+    std::string shown;
+    shown.reserve(ev.text.size());
+    for (char c : ev.text) {
+        if (c == '\r') continue;
+        if (c == '\n' && block_empty && shown.empty()) continue;
+        if (c == '\t') shown += "    ";
+        else shown += c;
+    }
+    if (shown.empty()) return;
+
+    if (kind == StreamOpen::Reasoning) {
+        g_stream_reasoning += ev.text;
+        std::cout << kDim << shown << kReset;
+    } else {
+        g_stream_text += ev.text;
+        g_stream_text_shown += shown;
+        std::cout << shown;
+    }
+    g_stream_at_col0 = shown.back() == '\n';
+    std::cout << std::flush;
+}
+
 void print_reply(const std::string& text) {
-    std::cout << render_markdown_impl(text, terminal_width()) << "\n";
+    const size_t cols = terminal_width();
+    const std::string reply = trimmed(text);
+    const std::string streamed = trimmed(g_last_text);
+
+    // Streamed already. When the plain text is still the last thing on the
+    // screen and all of it is in view, it is redrawn as Markdown in its place;
+    // otherwise it stays as it is. What the reply adds after it (a note that
+    // it was cut short) is printed below.
+    if (!streamed.empty() && reply.compare(0, streamed.size(), streamed) == 0) {
+        const size_t rows = rows_taken(g_last_text_shown, cols);
+        const bool in_view = g_last_text_seq == g_output_seq && rows + 1 < terminal_height();
+        if (in_view) {
+            std::cout << "\x1b[" << rows << "F\x1b[J"
+                      << render_markdown_impl(text, cols) << "\n";
+        } else {
+            const std::string rest = trimmed(reply.substr(streamed.size()));
+            if (!rest.empty()) std::cout << render_markdown_impl(rest, cols);
+            std::cout << "\n";
+        }
+        begin_turn_output();
+        return;
+    }
+    // A reply that is only chain of thought was shown as it streamed, dimmed.
+    if (!reply.empty() && reply == trimmed(g_last_reasoning)) {
+        std::cout << "\n";
+        begin_turn_output();
+        return;
+    }
+    std::cout << render_markdown_impl(text, cols) << "\n";
+    begin_turn_output();
 }
 
 void print_transcript(const std::vector<TranscriptEntry>& entries, const std::string& after) {
@@ -1010,14 +1174,17 @@ void print_transcript(const std::vector<TranscriptEntry>& entries, const std::st
 }
 
 void print_line(const std::string& text) {
+    note_output();
     std::cout << text << "\n";
 }
 
 void print_error(const std::string& text) {
+    note_output();
     std::cerr << kRed << "error: " << text << kReset << "\n";
 }
 
 void print_warning(const std::string& text) {
+    note_output();
     std::cerr << kYellow << "warning: " << text << kReset << "\n";
 }
 

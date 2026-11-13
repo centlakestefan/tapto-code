@@ -53,6 +53,12 @@ newer build never looks older than the one it replaces.
 
 ### Added
 
+- Streamed replies for the openai dialect (`stream`, on by default): the
+  chain of thought is written dimmed as the model thinks and the answer as it
+  is written, then redrawn as Markdown in place. `read-timeout` now waits for
+  a silence rather than the whole answer, and ESC stops a reply partway
+  through instead of after it. `stream = false` brings back the whole-reply
+  request; with `print-cot` off nothing is shown until the reply is complete.
 - Plugins: tools beyond the core, installed in the `plugins` folder beside
   tapto-code. `/add-plugin <name>` gives the model a plugin's tools that only
   read, `/add-plugin <name> rw` also those that change things, and

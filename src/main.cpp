@@ -114,8 +114,9 @@ const char* kUsage =
     "  (optional, default true), system-prompt or system-prompt-file (replaces the\n"
     "  built-in prompt), system-prompt-append or system-prompt-append-file (added\n"
     "  after it), trace-file, connection-timeout\n"
-    "  (seconds, default 30), read-timeout (seconds to wait for the whole answer,\n"
-    "  default 300; raise it for a slow local model), and per provider\n"
+    "  (seconds, default 30), read-timeout (seconds of silence from the server,\n"
+    "  default 300; unstreamed, the whole answer), stream (optional, default\n"
+    "  true; openai dialect: show the reply as it arrives), and per provider\n"
     "  <name>-reasoning-effort (openai dialect only: low, medium, high, ...)\n"
     "\n"
     "A provider is a named block of keys, so several backends -- including two\n"
@@ -210,7 +211,7 @@ bool is_supported_config_key(const std::string& key) {
         "provider", "provider-type", "api-key", "provider-url", "model",
         "max-output-tokens", "max-tool-iterations", "system-prompt", "system-prompt-file",
         "system-prompt-append", "system-prompt-append-file", "trace-file", "print-cot",
-        "connection-timeout", "read-timeout",
+        "connection-timeout", "read-timeout", "stream",
         "reasoning-effort",
     };
     for (const char* k : kKeys) {
@@ -231,7 +232,7 @@ const char* kSupportedKeysHelp =
     "provider, provider-url, model, api-key, "
     "max-output-tokens, max-tool-iterations, system-prompt, system-prompt-file, "
     "system-prompt-append, system-prompt-append-file, trace-file, print-cot, "
-    "connection-timeout, read-timeout, plugin.<name> (ro, rw or off), "
+    "connection-timeout, read-timeout, stream, plugin.<name> (ro, rw or off), "
     "per provider <name>-provider-type, <name>-provider-url, <name>-model, "
     "<name>-api-key, <name>-reasoning-effort, "
     "and the keys of an installed plugin, <plugin>-... (jira-url, jira-api-token, ...); "
@@ -2073,7 +2074,8 @@ int cmd_chat(const std::string& requested_provider, bool resume) {
     // config store. read-timeout bounds the whole (unstreamed) generation, so
     // a local model that decodes slowly may need it raised well above the
     // hosted-provider default; a timeout shorter than the generation retries
-    // the same request until the retry budget is gone.
+    // the same request until the retry budget is gone. Streamed (`stream`,
+    // below), it is the longest silence instead.
     if (auto v = get_effective("connection-timeout")) {
         try {
             ai_config.setConnectionTimeoutSeconds(std::stoi(*v));
@@ -2097,6 +2099,24 @@ int cmd_chat(const std::string& requested_provider, bool resume) {
         std::transform(s.begin(), s.end(), s.begin(),
                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         ai_config.setPrintCot(!(s == "false" || s == "0" || s == "off" || s == "no"));
+    }
+    // Streamed replies (openai dialect; the others ignore it): the chain of
+    // thought and the text are written as they arrive, read-timeout becomes
+    // the longest silence rather than the whole answer, and ESC stops a reply
+    // partway through. With print-cot off nothing is shown until the reply
+    // is complete, as before; the stream still serves the timeout and ESC.
+    {
+        bool stream = true;
+        if (auto v = get_effective("stream")) {
+            std::string s = *v;
+            std::transform(s.begin(), s.end(), s.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            stream = !(s == "false" || s == "0" || s == "off" || s == "no");
+        }
+        ai_config.setStream(stream);
+        if (stream && ai_config.printCot()) {
+            ai_config.setStreamCallback([](const tapto::StreamEvent& ev) { ui::print_stream(ev); });
+        }
     }
     // Chosen by dialect, never by name: 'gemma4' is a name this program has
     // never heard of, and what it means is whatever its -provider-type says.
@@ -2693,6 +2713,7 @@ int cmd_chat(const std::string& requested_provider, bool resume) {
         // this thread at each tool-loop checkpoint (see CancellationToken).
         cancel_token.reset(); // reset for this turn
         context.cancel = &cancel_token;
+        ui::begin_turn_output();
 
         // Saved before the call so a session killed mid-turn still has the
         // prompt, and after it with the turn in the history.
