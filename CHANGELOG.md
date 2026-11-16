@@ -147,6 +147,11 @@ newer build never looks older than the one it replaces.
   of this session. A multi-line paste is still sent as one prompt.
 - After `--resume` or `/resume`, Up recalls the prompts of the conversation
   you picked up, starting with the one that never got an answer.
+- `find_files` still shows up to 20 matching lines of a file and 100 files,
+  but no longer drops the rest without a word: when there are more, all of
+  them are saved in `@tmp`, and a note at each cut tells the model which
+  lines of that file hold the rest. A matching line longer than 300 bytes is
+  shortened, with its length, and a result too long to show goes to `@tmp`.
 
 ### Fixed
 
