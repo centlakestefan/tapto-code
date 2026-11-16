@@ -161,6 +161,11 @@ newer build never looks older than the one it replaces.
 
 ### Fixed
 
+- A reply that hit `max-output-tokens` partway through a tool call left the
+  call's cut-off arguments in the conversation, and llama.cpp and SGLang
+  servers then refused every later request in the session. The cut-off call
+  is now sent back with empty arguments, and the model is told its reply hit
+  the output limit.
 - As you typed a prompt, the line could flicker: the redraw was written to
   the terminal in small pieces, and the terminal repainted between them. The
   line is now redrawn in one go, so typing is steady.
