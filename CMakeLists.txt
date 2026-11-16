@@ -44,10 +44,14 @@ else()
 endif()
 FetchContent_MakeAvailable(tapto-cmake)
 include(${tapto-cmake_SOURCE_DIR}/TaptoPin.cmake)
-# Where install() puts the plugins outside Windows: lib/tapto-code/plugins,
-# where an installed tapto-code looks for them. libtapto's default names the
-# top-level project, which in the installer's build is tapto-code-install.
-if(NOT WIN32)
+# Where install() puts the plugins: bin/plugins beside tapto-code on Windows,
+# and outside it lib/tapto-code/plugins, where an installed tapto-code looks
+# for them. libtapto's default names the top-level project, which in the
+# installer's build is tapto-code-install. Set here, not left to libtapto,
+# since tapto_plugin() reads it in the scope that calls it, and dbg's is ours.
+if(WIN32)
+  set(TAPTO_PLUGIN_INSTALL_DIR "bin/plugins")
+else()
   set(TAPTO_PLUGIN_INSTALL_DIR "lib/tapto-code/plugins")
 endif()
 tapto_pin(libtapto
@@ -130,6 +134,14 @@ install(TARGETS tapto-code RUNTIME DESTINATION bin)
 # them, so a build in build/ finds them. TAPTO_CODE_PLUGINS keeps the list
 # under the name the installer reads (every plugin it signs and scans for
 # runtime DLLs).
+#
+# dbg is tapto-code's own: Windows crash dumps, user-mode and kernel, read
+# with the Windows debugger engine (dbgeng.dll, loaded at run time from
+# WinDbg, a Windows Kit or System32, so nothing is linked). Windows only.
+if(WIN32)
+  tapto_plugin(tapto-plugin-dbg dbg plugins/dbg/dbg.cpp)
+  target_link_libraries(tapto-plugin-dbg PRIVATE nlohmann_json::nlohmann_json)
+endif()
 get_property(_tapto_plugins GLOBAL PROPERTY TAPTO_PLUGINS)
 if(_tapto_plugins)
   add_dependencies(tapto-code ${_tapto_plugins})
@@ -246,3 +258,14 @@ target_link_libraries(test-ui PRIVATE tapto::tapto)
 tapto_code_warnings(test-ui)
 
 add_test(NAME ui COMMAND test-ui)
+
+# The dbg plugin: the commands it refuses, and a minidump of a child process
+# opened and read through it. Loads the module directly, as the host does.
+if(WIN32)
+  add_executable(test-dbg tests/test_dbg.cpp)
+  target_include_directories(test-dbg PRIVATE "${libtapto_SOURCE_DIR}/include")
+  target_link_libraries(test-dbg PRIVATE nlohmann_json::nlohmann_json)
+  add_dependencies(test-dbg tapto-plugin-dbg)
+  tapto_code_warnings(test-dbg)
+  add_test(NAME dbg COMMAND test-dbg $<TARGET_FILE:tapto-plugin-dbg>)
+endif()
