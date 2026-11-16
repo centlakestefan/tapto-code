@@ -470,11 +470,12 @@ Chat config keys:
 | `<name>-provider-url` | no | claude: `https://api.anthropic.com`, openai: `https://api.openai.com`, gemini: `https://generativelanguage.googleapis.com` |
 | `<name>-model`  | no       | claude: `claude-sonnet-4-6`, openai: `gpt-4o`, gemini: `gemini-2.0-flash` |
 | `<name>-reasoning-effort` | no | unset — sent as `reasoning_effort` by the **openai** dialect only (e.g. `low`, `medium`, `high`); ignored with a warning on other dialects |
+| `<name>-stream` | no | unset — this provider's own `stream`, over the unscoped one. A copy of a provider block with `<copy>-stream = true` tries the beta beside the original |
 | `max-output-tokens` | no   | `16000` — raise it for long replies (large tables, reports) |
 | `max-tool-iterations` | no | `200` — max tool-call rounds per reply before the agent stops |
 | `connection-timeout` | no  | `30` — seconds to wait for the provider to accept the connection |
 | `read-timeout`  | no       | `300` — seconds to wait while the server sends nothing. A streamed reply (`stream`) arrives in pieces, so this is in practice the wait for the first one; unstreamed, it is the whole answer, so raise it for a slow local model (a timeout shorter than the generation retries the same request until the retry budget is spent) |
-| `stream`        | no       | `true` — the reply is shown as it arrives, the chain of thought dimmed and the answer redrawn as Markdown when it is complete, and ESC stops it partway through; `false` waits for the whole reply |
+| `stream`        | no       | `false` — **beta**: `true` shows the reply as it arrives, the chain of thought dimmed and the answer redrawn as Markdown when it is complete, and ESC stops it partway through; `false` waits for the whole reply |
 | `print-cot`     | no       | `true` — show the model's intermediate reasoning/text during tool calls; set `false` to keep it in the trace file only |
 | `system-prompt` | no       | built-in prompt — replaces it with a one-line value  |
 | `system-prompt-file` | no  | unset — replaces the built-in prompt with a text file's contents (see below) |

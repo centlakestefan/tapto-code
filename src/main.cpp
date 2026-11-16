@@ -115,9 +115,10 @@ const char* kUsage =
     "  built-in prompt), system-prompt-append or system-prompt-append-file (added\n"
     "  after it), trace-file, connection-timeout\n"
     "  (seconds, default 30), read-timeout (seconds of silence from the server,\n"
-    "  default 300; unstreamed, the whole answer), stream (optional, default\n"
-    "  true: show the reply as it arrives), and per provider\n"
-    "  <name>-reasoning-effort (openai dialect only: low, medium, high, ...)\n"
+    "  default 300; unstreamed, the whole answer), stream (beta, default false:\n"
+    "  true shows the reply as it arrives), and per provider\n"
+    "  <name>-reasoning-effort (openai dialect only: low, medium, high, ...) and\n"
+    "  <name>-stream (the provider's own stream, over the one above)\n"
     "\n"
     "A provider is a named block of keys, so several backends -- including two\n"
     "local servers speaking the same API -- coexist in one config store:\n"
@@ -183,7 +184,7 @@ bool has_suffix(const std::string& key, const std::string& suffix) {
 
 // The keys a provider block owns, each written as `<name>-<key>`.
 const char* kProviderBlockKeys[] = {"provider-type", "api-key", "provider-url", "model",
-                                    "reasoning-effort"};
+                                    "reasoning-effort", "stream"};
 
 // A provider name has to survive a round trip through the `key = value` config
 // format, so it is limited to characters that can't be mistaken for syntax.
@@ -234,7 +235,7 @@ const char* kSupportedKeysHelp =
     "system-prompt-append, system-prompt-append-file, trace-file, print-cot, "
     "connection-timeout, read-timeout, stream, plugin.<name> (ro, rw or off), "
     "per provider <name>-provider-type, <name>-provider-url, <name>-model, "
-    "<name>-api-key, <name>-reasoning-effort, "
+    "<name>-api-key, <name>-reasoning-effort, <name>-stream, "
     "and the keys of an installed plugin, <plugin>-... (jira-url, jira-api-token, ...); "
     "any of them for one program alone after its name: tapto-code.print-cot, "
     "tapto-word.plugin.mcp, ...";
@@ -2105,9 +2106,14 @@ int cmd_chat(const std::string& requested_provider, bool resume) {
     // the longest silence rather than the whole answer, and ESC stops a reply
     // partway through. With print-cot off nothing is shown until the reply
     // is complete, as before; the stream still serves the timeout and ESC.
+    // A beta, off unless asked for: `stream` for every provider, or
+    // `<name>-stream` for one, which wins (a copy of a provider block with
+    // the stream on runs beside the original to compare).
     {
-        bool stream = true;
-        if (auto v = get_effective("stream")) {
+        bool stream = false;
+        std::optional<std::string> v = get_effective(provider->name + "-stream");
+        if (!v) v = get_effective("stream");
+        if (v) {
             std::string s = *v;
             std::transform(s.begin(), s.end(), s.begin(),
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
