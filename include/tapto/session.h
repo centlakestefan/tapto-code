@@ -71,7 +71,7 @@ struct TranscriptEntry {
 // results, images and the model's thinking are left out, and a user turn that
 // carries any of them is a tool's turn, not a prompt. The model's texts
 // between two prompts are joined into one entry.
-std::vector<TranscriptEntry> transcript(const nlohmann::json& history);
+std::vector<TranscriptEntry> session_transcript(const nlohmann::json& history);
 
 // The prompts the line editor recalls with Up once a conversation is resumed,
 // oldest first: `typed` (what was entered earlier in this run), then the

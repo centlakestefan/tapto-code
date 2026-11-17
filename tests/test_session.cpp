@@ -192,7 +192,7 @@ int main() {
             {"role":"user","content":[{"type":"text","text":"thanks","cache_control":{"type":"ephemeral"}}]}
         ])");
         claude.insert(claude.begin(), json{{"role", "user"}, {"content", seed}});
-        CHECK_EQ(render(tapto::transcript(claude)),
+        CHECK_EQ(render(tapto::session_transcript(claude)),
                  "S:|U:fix the build|M:Looking at it.\n\nFixed.|U:thanks|");
 
         const json openai = json::parse(R"([
@@ -205,7 +205,7 @@ int main() {
                 {"type":"image_url","image_url":{"url":"data:image/png;base64,AA=="}}]},
             {"role":"assistant","content":"It is blue."}
         ])");
-        CHECK_EQ(render(tapto::transcript(openai)), "U:show the logo|M:It is blue.|");
+        CHECK_EQ(render(tapto::session_transcript(openai)), "U:show the logo|M:It is blue.|");
 
         const json gemini = json::parse(R"([
             {"role":"user","parts":[{"text":"list files"}]},
@@ -214,10 +214,10 @@ int main() {
             {"role":"user","parts":[{"functionResponse":{"name":"find_files","response":{"content":"a.cpp"}}}]},
             {"role":"model","parts":[{"text":"There is "},{"text":"a.cpp."}]}
         ])");
-        CHECK_EQ(render(tapto::transcript(gemini)), "U:list files|M:There is a.cpp.|");
+        CHECK_EQ(render(tapto::session_transcript(gemini)), "U:list files|M:There is a.cpp.|");
 
-        CHECK_EQ(render(tapto::transcript(json::object())), "");
-        CHECK_EQ(render(tapto::transcript(json::parse(R"([1,"x",{"role":"user"}])"))), "");
+        CHECK_EQ(render(tapto::session_transcript(json::object())), "");
+        CHECK_EQ(render(tapto::session_transcript(json::parse(R"([1,"x",{"role":"user"}])"))), "");
 
         // --- what Up recalls after a resume ----------------------------------
         // This run's typing, then the conversation's prompts, then the

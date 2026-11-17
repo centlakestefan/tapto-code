@@ -143,7 +143,7 @@ std::optional<SavedSession> load_session(const fs::path& path, std::string& erro
     return s;
 }
 
-std::vector<TranscriptEntry> transcript(const json& history) {
+std::vector<TranscriptEntry> session_transcript(const json& history) {
     // The message all three clients seed the history with after /compact
     // (libtapto's beginWithSummary).
     static const std::string kSummaryPrefix =
@@ -226,7 +226,7 @@ std::vector<std::string> recall_history(const std::vector<std::string>& typed,
                                         const json& history, const std::string& pending,
                                         std::size_t cap) {
     std::vector<std::string> all = typed;
-    for (auto& e : transcript(history)) {
+    for (auto& e : session_transcript(history)) {
         if (e.who == TranscriptEntry::Who::User) all.push_back(std::move(e.text));
     }
     if (!pending.empty()) all.push_back(pending);

@@ -2359,7 +2359,7 @@ int cmd_chat(const std::string& requested_provider, bool resume) {
         }
         // Where the conversation stood, as it looked: about a screenful of its
         // end, sized so that it and the notice below both stay in view.
-        ui::print_transcript(transcript(next.history), msg);
+        ui::print_transcript(session_transcript(next.history), msg);
         ui::print_line(msg);
         persist();
     };
