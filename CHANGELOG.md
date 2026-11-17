@@ -166,6 +166,10 @@ newer build never looks older than the one it replaces.
   servers then refused every later request in the session. The cut-off call
   is now sent back with empty arguments, and the model is told its reply hit
   the output limit.
+- When the model named a tool's argument wrong, such as `file_path` where the
+  editor takes `path`, it was told the file was not there, and could give up
+  on the editor as broken. It is now told which name it got wrong and what
+  the tool's arguments are called.
 - As you typed a prompt, the line could flicker: the redraw was written to
   the terminal in small pieces, and the terminal repainted between them. The
   line is now redrawn in one go, so typing is steady.
