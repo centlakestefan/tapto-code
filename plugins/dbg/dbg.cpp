@@ -20,9 +20,15 @@
 // The DLLs come from one folder, since dbgeng loads dbghelp beside itself and
 // dbghelp loads symsrv (symbol downloads) beside itself, and the extension
 // commands (!analyze, !process) come from winext\ and winxp\ beside them. In
-// order: `dbg-path`, the Debugging Tools for Windows of a Windows Kit, and
-// System32 last: Windows has a dbgeng.dll there, but no symsrv.dll and no
-// extensions, so it reads a dump without symbols downloading or !analyze.
+// order: `dbg-path`, the Debugging Tools for Windows of a Windows Kit, the
+// engine shipped in dbg-engine\ beside this plugin, and System32 last.
+//
+// The shipped one is Microsoft's redistributable DbgEng and SymSrv (NuGet,
+// cmake/DbgEngine.cmake): dumps open and symbols download, but it has no
+// extension DLLs, so no !analyze and few kernel commands; the Debugging
+// Tools have them, and a user who wants them installs those. Windows has a
+// dbgeng.dll in System32 too, but no symsrv.dll and no extensions, so it
+// reads a dump without symbols downloading or !analyze.
 //
 // The WinDbg app is not among them: Windows refuses any other program the
 // DLLs of an app's package folder (ERROR_ACCESS_DENIED). A copy of its
@@ -417,7 +423,8 @@ std::string shortfall(const std::wstring& folder) {
     if (!file_exists(folder + L"\\symsrv.dll")) missing = "symbols do not download (no symsrv.dll)";
     if (!file_exists(folder + L"\\winext\\ext.dll") && !file_exists(folder + L"\\ext.dll"))
         missing += std::string(missing.empty() ? "" : ", and ") +
-                   "!analyze and the other extension commands are missing (no winext\\ext.dll)";
+                   "!analyze and the other extension commands are missing (no winext\\ext.dll), so read "
+                   "the dump with the built-in commands: .ecxr, .lastevent, k, dv, r, lm, u, d*";
     if (missing.empty()) return {};
     return "The debugger engine in " + narrow(folder) + " is not a full one: " + missing +
            ". Install the Debugging Tools for Windows (a feature of the Windows SDK installer), or "
@@ -436,6 +443,22 @@ std::wstring kits_folder() {
     if (!dir.empty() && dir.back() != L'\\') dir += L'\\';
     dir += L"Debuggers\\";
     dir += kKitsArch;
+    return file_exists(dir + L"\\dbgeng.dll") ? dir : std::wstring();
+}
+
+// The engine shipped beside this plugin (plugins\dbg-engine), or empty.
+std::wstring shipped_folder() {
+    HMODULE self = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCWSTR>(&shipped_folder), &self))
+        return {};
+    wchar_t path[MAX_PATH] = {};
+    const DWORD n = GetModuleFileNameW(self, path, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return {};
+    std::wstring dir(path, n);
+    const auto slash = dir.find_last_of(L"\\/");
+    if (slash == std::wstring::npos) return {};
+    dir = dir.substr(0, slash) + L"\\dbg-engine";
     return file_exists(dir + L"\\dbgeng.dll") ? dir : std::wstring();
 }
 
@@ -820,6 +843,7 @@ private:
                 places.emplace_back(widen(m_path_setting), "dbg-path");
             } else {
                 places.emplace_back(kits_folder(), "the Windows Kit's Debugging Tools");
+                places.emplace_back(shipped_folder(), "the engine shipped with the plugin");
                 places.emplace_back(system_folder(), "Windows (System32)");
             }
             for (const auto& [folder, what] : places) {

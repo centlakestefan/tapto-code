@@ -475,9 +475,14 @@ sees it, and the engine itself is set to refuse shell and execution commands.
 at your own risk. ESC stops a command partway through.
 
 The engine is found in this order: `dbg-path`, a folder with `dbgeng.dll`;
-the Debugging Tools for Windows (a feature of the Windows SDK installer); and
-Windows' own, in System32, which reads a dump but neither downloads symbols
-nor has `!analyze`. The WinDbg app from the Store cannot be used directly,
+the Debugging Tools for Windows (a feature of the Windows SDK installer); the
+engine that comes with tapto-code, in `plugins\dbg-engine`; and Windows' own,
+in System32, which reads a dump but neither downloads symbols nor has
+`!analyze`. The one that comes with tapto-code is Microsoft's redistributable
+engine: it downloads symbols and reads stacks, locals, memory and types, but
+has no extension commands, so no `!analyze` and few of the kernel ones
+(`!process`, `!thread`). For those, install the Debugging Tools for Windows,
+and tapto-code uses them instead. The WinDbg app from the Store cannot be used directly,
 since Windows lets no other program load its files, but a copy of its `amd64`
 folder can, through `dbg-path`. Symbols come from `dbg-symbol-path`, else
 `_NT_SYMBOL_PATH`, else Microsoft's symbol server through a cache in

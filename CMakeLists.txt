@@ -136,11 +136,15 @@ install(TARGETS tapto-code RUNTIME DESTINATION bin)
 # runtime DLLs).
 #
 # dbg is tapto-code's own: Windows crash dumps, user-mode and kernel, read
-# with the Windows debugger engine (dbgeng.dll, loaded at run time from
-# WinDbg, a Windows Kit or System32, so nothing is linked). Windows only.
+# with the Windows debugger engine (dbgeng.dll, loaded at run time, so nothing
+# is linked): the Debugging Tools for Windows when installed, else Microsoft's
+# redistributable engine shipped beside it (cmake/DbgEngine.cmake). Windows
+# only.
 if(WIN32)
   tapto_plugin(tapto-plugin-dbg dbg plugins/dbg/dbg.cpp)
   target_link_libraries(tapto-plugin-dbg PRIVATE nlohmann_json::nlohmann_json)
+  include(cmake/DbgEngine.cmake)
+  tapto_dbg_engine()
 endif()
 get_property(_tapto_plugins GLOBAL PROPERTY TAPTO_PLUGINS)
 if(_tapto_plugins)
