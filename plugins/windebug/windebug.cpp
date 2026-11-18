@@ -293,7 +293,11 @@ public:
     void allow(const std::set<std::string>& extra) { m_extra = extra; }
 
     // Empty when `line` may run; otherwise why not, for the model.
-    std::string check(const std::string& line) const {
+    // `extension`, when given, is set when the line runs one of the built-in
+    // extension commands (!analyze, !heap ...), which an engine without the
+    // extension DLLs cannot; a command the user allowed is not counted, since
+    // it may come from an extension of their own.
+    std::string check(const std::string& line, bool* extension = nullptr) const {
         if (line.find_first_of("\r\n", 0) != std::string::npos || line.find('\0') != std::string::npos)
             return "one line only";
         const std::string lc = lower(line);
@@ -308,7 +312,7 @@ public:
             if (semi == std::string::npos) semi = line.size();
             const std::string piece = trim(line.substr(from, semi - from));
             if (!piece.empty()) {
-                const std::string why = check_one(piece);
+                const std::string why = check_one(piece, extension);
                 if (!why.empty()) return why;
             }
             from = semi + 1;
@@ -323,7 +327,7 @@ private:
         return "'" + name + "' is not one of the commands that only read the dump";
     }
 
-    std::string check_one(const std::string& cmd) const {
+    std::string check_one(const std::string& cmd, bool* extension) const {
         const char c = cmd[0];
 
         // Thread and process prefixes: ~ lists threads, ~3s switches, ~*k
@@ -348,9 +352,9 @@ private:
             if ((rest[0] == 'e' || rest[0] == 'E') && (rest.size() == 1 || rest[1] == ' ' || rest[1] == '\t')) {
                 const std::string inner = trim(rest.substr(1));
                 if (inner.empty()) return "~e needs a command";
-                return check_one(inner);
+                return check_one(inner, extension);
             }
-            return check_one(rest);
+            return check_one(rest, extension);
         }
 
         if (c == '?') return {}; // ? and ?? evaluate expressions
@@ -385,6 +389,7 @@ private:
             if (!kBangCommands.count(name)) return refuse("!" + name);
             if (name == "analyze" && !analyze_args_ok(args))
                 return "!analyze takes -v, -vv, -f, -hang, -show and numbers here";
+            if (extension) *extension = true;
             return {};
         }
 
@@ -417,11 +422,17 @@ const wchar_t* const kKitsArch = L"arm64";
 const wchar_t* const kKitsArch = L"x64";
 #endif
 
+// Whether an engine's folder has the extension DLLs (!analyze and the rest):
+// the Debugging Tools do, the shipped engine and System32's do not.
+bool has_extensions(const std::wstring& folder) {
+    return file_exists(folder + L"\\winext\\ext.dll") || file_exists(folder + L"\\ext.dll");
+}
+
 // Where an engine's folder falls short, for the user; empty when it has all.
 std::string shortfall(const std::wstring& folder) {
     std::string missing;
     if (!file_exists(folder + L"\\symsrv.dll")) missing = "symbols do not download (no symsrv.dll)";
-    if (!file_exists(folder + L"\\winext\\ext.dll") && !file_exists(folder + L"\\ext.dll"))
+    if (!has_extensions(folder))
         missing += std::string(missing.empty() ? "" : ", and ") +
                    "!analyze and the other extension commands are missing (no winext\\ext.dll), so read "
                    "the dump with the built-in commands: .ecxr, .lastevent, k, dv, r, lm, u, d*";
@@ -767,6 +778,7 @@ private:
         HMODULE module = nullptr;
         std::wstring folder;
         std::string note; // what the user should know about this engine
+        bool extensions = false; // has ext.dll, so the built-in ! commands run
         IDebugClient5* client = nullptr;
         IDebugControl4* control = nullptr;
         IDebugSymbols3* symbols = nullptr;
@@ -866,6 +878,7 @@ private:
                 m_engine.folder = folder;
                 log("engine from " + what + ": " + narrow(folder));
                 m_engine.note += shortfall(folder);
+                m_engine.extensions = has_extensions(folder);
                 break;
             }
             if (!m_engine.module) {
@@ -972,15 +985,25 @@ private:
     std::string command(const std::string& line) {
         const std::string cmd = trim(line);
         if (cmd.empty()) return "ERROR: windebug_command needs a command";
-        if (const std::string why = m_check.check(cmd); !why.empty())
+        bool extension = false;
+        if (const std::string why = m_check.check(cmd, &extension); !why.empty())
             return "ERROR: " + why + ". " +
                    "Only commands that read the dump run here; see the tool's description. "
                    "The user can allow more with windebug-allow-commands.";
         auto out = std::make_shared<std::string>();
-        const std::string stop = run([this, cmd, out] {
+        const std::string stop = run([this, cmd, extension, out] {
             std::string& result = *out;
             if (!m_engine.open) {
                 result = "ERROR: no dump is open; open one with windebug_open";
+                return;
+            }
+            // Said here rather than left to the engine, whose answer ("not
+            // extension gallery command", a LoadLibrary error) does not say why.
+            if (extension && !m_engine.extensions) {
+                result = "ERROR: the ! extension commands (!analyze, !heap, ...) are not in this "
+                         "debugger engine; it has no extension DLLs. Read the dump with the built-in "
+                         "commands instead: .ecxr, .lastevent, .exr -1, k, kP, dv, r, lm, u, d*. "
+                         "The user gets them by installing the Debugging Tools for Windows.";
                 return;
             }
             const HRESULT hr = m_engine.control->ExecuteWide(DEBUG_OUTCTL_THIS_CLIENT, widen(cmd).c_str(),

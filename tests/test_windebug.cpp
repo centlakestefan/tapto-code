@@ -272,6 +272,17 @@ int wmain(int argc, wchar_t** argv) {
         CHECK_IN(r, "= 00000000`00000003");
         r = p.command(".shell dir");
         CHECK_IN(r, "ERROR");
+        // An extension command: run by a full engine, and by one without the
+        // extension DLLs (the shipped engine) answered in one line that says why.
+        r = p.command("!analyze -v");
+        const bool full = r.find("ERROR") == std::string::npos;
+        if (full) {
+            CHECK_IN(r, "> !analyze -v");
+        } else {
+            CHECK_IN(r, "not in this debugger engine");
+            CHECK_IN(p.command("k; !ext.heap -s"), "not in this debugger engine");
+            CHECK_IN(p.command("~*e !teb"), "not in this debugger engine");
+        }
 
         // A second open replaces the first.
         r = p.call("windebug_open", {{"path", dump.u8string()}});
