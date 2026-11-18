@@ -195,7 +195,6 @@ newer build never looks older than the one it replaces.
   others.
 - Ctrl-D at an empty prompt ends the session, as it does in a shell; it used
   to do nothing.
-
 - A table the model returned that was wider than your terminal had its rows
   cut off with a `…` where they did not fit, so part of each cell was missing.
   The table now wraps onto extra lines so every cell shows in full, and the
