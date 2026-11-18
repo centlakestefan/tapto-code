@@ -143,6 +143,22 @@ std::optional<SavedSession> load_session(const fs::path& path, std::string& erro
     return s;
 }
 
+namespace {
+const char* const kNoteOpen = "<folder-access-changed>\n";
+const char* const kNoteClose = "\n</folder-access-changed>\n\n";
+} // namespace
+
+std::string with_folder_note(const std::string& note, const std::string& prompt) {
+    return kNoteOpen + note + kNoteClose + prompt;
+}
+
+std::string without_folder_note(const std::string& text) {
+    if (text.rfind(kNoteOpen, 0) != 0) return text;
+    const std::size_t close = text.find(kNoteClose);
+    if (close == std::string::npos) return text;
+    return text.substr(close + std::string(kNoteClose).size());
+}
+
 std::vector<TranscriptEntry> session_transcript(const json& history) {
     // The message all three clients seed the history with after /compact
     // (libtapto's beginWithSummary).
@@ -208,6 +224,7 @@ std::vector<TranscriptEntry> session_transcript(const json& history) {
                 out.push_back({TranscriptEntry::Who::Summary, std::string()});
                 continue;
             }
+            text = without_folder_note(text);
             if (!text.empty()) out.push_back({TranscriptEntry::Who::User, std::move(text)});
         } else if (!text.empty()) {
             // A model turn that only called tools has no text, and the texts

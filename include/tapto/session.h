@@ -66,6 +66,15 @@ struct TranscriptEntry {
     std::string text;
 };
 
+// A folder granted or withdrawn in the middle of a conversation is told to
+// the model in a note ahead of the next prompt, not by a new system prompt,
+// which would throw away the provider's cached prefix and have a local server
+// read the whole conversation again. with_folder_note() puts the note in
+// front of the prompt, between markers; without_folder_note() takes it off
+// again, so the transcript and the recalled prompts are what the user typed.
+std::string with_folder_note(const std::string& note, const std::string& prompt);
+std::string without_folder_note(const std::string& text);
+
 // The conversation in `history`, any of the three dialects' shapes, as the
 // user saw it: their prompts and the model's text, in order. Tool calls, tool
 // results, images and the model's thinking are left out, and a user turn that

@@ -2156,11 +2156,11 @@ int cmd_chat(const std::string& requested_provider, bool resume,
 
     // The file tools (editor + search) work inside the working directory. On
     // top of those the user can grant other folders with /add-folder: the
-    // library's list_files / read_file / search_files then join the table, the
-    // editor and find_files also reach into the ones granted read-write, and
-    // the system prompt names what is granted. Tools and prompt both change
-    // the request prefix, so they are rebuilt together and only on a change --
-    // the cache misses once per grant, not per turn.
+    // library's list_files / read_file / search_files, on the table from the
+    // start, reach them, the editor and find_files also reach into the ones
+    // granted read-write, and the model is told what is granted: in the system
+    // prompt, or in a note when it changes mid-conversation, so a grant keeps
+    // the cached prefix (rebuild_tools_and_prompt below).
     //
     // The working directory is the set's home root, so once read_file and
     // friends are on the table they read the project as well as the grants,
@@ -2215,16 +2215,38 @@ int cmd_chat(const std::string& requested_provider, bool resume,
             !why.empty())
             ui::print_warning("plugin not loaded: " + why);
     }
-    auto rebuild_tools_and_prompt = [&]() {
-        context.tools = builtin_tools();
-        if (folders.has_grants()) {
-            for (auto& t : folder_tools(folders)) context.tools.push_back(std::move(t));
+    // Tools and system prompt open every request, so changing either throws
+    // away the provider's cached prefix: a local server reads the whole
+    // conversation again, minutes for a long one. A folder grant changes
+    // neither. The folder tools are always on the table (they reach the
+    // working directory too, and their descriptions do not name the grants),
+    // and the folders paragraph of the system prompt is written only when
+    // the prefix is lost anyway -- a new conversation, /clear, /compact,
+    // /resume, or a change of tools (a plugin). A grant in between is told to
+    // the model in a note ahead of the next prompt (folder_note below).
+    std::string prompt_folders; // the folders paragraph in the system prompt
+    std::string told_folders;   // what the model knows: that, or the last note
+    std::string tools_signature;
+    auto rebuild_tools_and_prompt = [&](bool fresh = false) {
+        std::vector<ToolSpec> tools = builtin_tools();
+        if (folders.home() || folders.has_grants()) {
+            for (auto& t : folder_tools(folders)) tools.push_back(std::move(t));
         }
-        for (auto& t : plugins.tools()) context.tools.push_back(std::move(t));
+        for (auto& t : plugins.tools()) tools.push_back(std::move(t));
+        std::string signature;
+        for (const auto& t : tools) {
+            signature += t.name + '\n' + t.description + '\n' + t.parameters.dump() + '\n' +
+                         t.claude_builtin_type + '\n';
+        }
+        if (signature != tools_signature) fresh = true; // the cached prefix is gone anyway
+        tools_signature = std::move(signature);
+        context.tools = std::move(tools);
+        if (fresh) {
+            prompt_folders = folder_prompt(folders);
+            told_folders = prompt_folders;
+        }
         std::string prompt = resolve_system_prompt();
-        if (const std::string extra = folder_prompt(folders); !extra.empty()) {
-            prompt += "\n\n" + extra;
-        }
+        if (!prompt_folders.empty()) prompt += "\n\n" + prompt_folders;
         // What the plugins say of their tools, the changing part asked anew:
         // the memory plugin's index is read again, so a memory the model
         // writes mid-session is picked up at the next rebuild.
@@ -2233,7 +2255,18 @@ int cmd_chat(const std::string& requested_provider, bool resume,
         }
         client->setSystemPrompt(prompt);
     };
-    rebuild_tools_and_prompt();
+    rebuild_tools_and_prompt(/*fresh=*/true);
+    // The folders as they are now, when the model was told otherwise: the
+    // note the next prompt carries (with_folder_note), or empty.
+    auto folder_note = [&]() -> std::string {
+        const std::string now = folder_prompt(folders);
+        if (now == told_folders) return {};
+        if (now.empty())
+            return "The user has withdrawn the folders granted earlier in this conversation: "
+                   "nothing outside the working directory is reachable now.";
+        return "The folders the user has granted have changed since earlier in this "
+               "conversation; this replaces what you were told before.\n" + now;
+    };
 
     // ESC-abort cancellation token (lives for the entire chat session). The
     // poll is installed once and runs inline in this thread at each tool-loop
@@ -2303,7 +2336,14 @@ int cmd_chat(const std::string& requested_provider, bool resume,
         saved = snapshot();
         return "; /resume brings it back";
     };
-    chat_commands.history_changed = [&]() { persist(); };
+    // /clear and /compact start the conversation over, and with it the cached
+    // prefix: the place to write the folders into the system prompt again.
+    chat_commands.history_changed = [&]() {
+        rebuild_tools_and_prompt(/*fresh=*/true);
+        persist();
+    };
+    // A grant leaves the system prompt alone (folder_note tells the model);
+    // the rebuild only matters when it changes the tools.
     chat_commands.folders_changed = [&]() { rebuild_tools_and_prompt(); };
     chat_commands.progress = [](const std::string& text) { ui::print_line(text); };
 
@@ -2344,7 +2384,7 @@ int cmd_chat(const std::string& requested_provider, bool resume,
             if (std::string why = plugins.add(p.name, rw); !why.empty())
                 ui::print_warning("plugin not loaded again: " + why);
         }
-        rebuild_tools_and_prompt();
+        rebuild_tools_and_prompt(/*fresh=*/true); // another conversation: its prefix is not cached
         // The conversation being replaced is set aside, not dropped: a second
         // /resume brings it back.
         std::optional<SavedSession> previous;
@@ -2769,14 +2809,22 @@ int cmd_chat(const std::string& requested_provider, bool resume,
             // can read a single ESC byte without waiting for Enter (POSIX).
             // Restored before the next prompt, which needs cooked mode.
             RawTerminal raw;
+            // A folder granted or withdrawn since the model was last told
+            // goes with this prompt. Should the turn fail, it goes again with
+            // the next: told twice is better than not at all.
+            const std::string note = folder_note();
+            const std::string told_before = told_folders;
+            if (!note.empty()) told_folders = folder_prompt(folders);
             try {
-                std::string reply = client->chat(context, line);
+                std::string reply =
+                    client->chat(context, note.empty() ? line : with_folder_note(note, line));
                 if (cancel_token.cancelled()) {
                     ui::print_line("\x1b[33m<interrupted by user — conversation preserved, type a new instruction>\x1b[0m");
                 } else {
                     ui::print_reply(reply);
                 }
             } catch (const std::exception& e) {
+                told_folders = told_before;
                 if (cancel_token.cancelled()) {
                     ui::print_line("\x1b[33m<interrupted by user — conversation preserved, type a new instruction>\x1b[0m");
                 } else {

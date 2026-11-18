@@ -167,6 +167,10 @@ newer build never looks older than the one it replaces.
 
 ### Fixed
 
+- `/add-folder` or `/remove-folder` in a long conversation made a local model
+  read the whole conversation again before its next answer, which could take
+  minutes, and cost a hosted provider its cache. The model is now told of the
+  change with your next prompt, and the conversation so far stays cached.
 - On Windows, a command-line argument with letters outside the system's code
   page — a `config set` value, a `command add` command line — arrived changed.
   Arguments are now read as typed, in any language.

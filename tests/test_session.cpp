@@ -216,6 +216,20 @@ int main() {
         ])");
         CHECK_EQ(render(tapto::session_transcript(gemini)), "U:list files|M:There is a.cpp.|");
 
+        // A folder note sent ahead of a prompt is the model's, not the
+        // user's: the transcript (and so Up's recall) shows the prompt alone.
+        const std::string sent = tapto::with_folder_note("Granted:\n  lib  (C:/lib)", "read lib/a.h");
+        CHECK_TRUE(sent.find("C:/lib") != std::string::npos);
+        CHECK_EQ(tapto::without_folder_note(sent), "read lib/a.h");
+        CHECK_EQ(tapto::without_folder_note("<folder-access-changed> by hand"),
+                 "<folder-access-changed> by hand");
+        json noted = json::array();
+        noted.push_back({{"role", "user"}, {"content", sent}});
+        noted.push_back({{"role", "assistant"}, {"content", "Read it."}});
+        CHECK_EQ(render(tapto::session_transcript(noted)), "U:read lib/a.h|M:Read it.|");
+        const auto recalled = tapto::recall_history({}, noted, "", 10);
+        CHECK_EQ(recalled.empty() ? std::string() : recalled.front(), "read lib/a.h");
+
         CHECK_EQ(render(tapto::session_transcript(json::object())), "");
         CHECK_EQ(render(tapto::session_transcript(json::parse(R"([1,"x",{"role":"user"}])"))), "");
 

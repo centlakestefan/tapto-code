@@ -317,10 +317,14 @@ library the project depends on, a sibling repository — grant it read-only:
 /remove-folder libfoo
 ```
 
-While a folder is granted the model gets four more tools — `list_folders`,
-`list_files`, `read_file` and `search_files` — that list, read and search under
-the working directory and the granted roots and nothing else; they cannot
-create or change a file. Files are addressed as `<label>/<relative path>`, where
+The model has four tools for this — `list_folders`, `list_files`, `read_file`
+and `search_files` — that list, read and search under the working directory
+and the granted roots and nothing else; they cannot create or change a file.
+They are there from the start, so a grant does not change the tools, and a
+grant in the middle of a conversation is told to the model in a note ahead of
+your next prompt rather than in a new system prompt. Both open every request,
+so the provider's cache of the conversation so far is kept: a local server
+does not have to read a long conversation again because a folder was added. Files are addressed as `<label>/<relative path>`, where
 the label is the folder's last path component (shown on grant and by
 `/list-folders`); a path without a label is relative to the working directory,
 as it is for every other tool.
