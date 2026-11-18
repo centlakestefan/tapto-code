@@ -474,7 +474,7 @@ and renewed by itself, so you log in again only when the server stops
 accepting it; the model tells you when that happens. A server with its own
 `bearer` or `Authorization` header is never logged in to.
 
-**Crash dumps (Windows).** With `/add-plugin dbg` the model opens a crash
+**Crash dumps (Windows).** With `/add-plugin windebug` the model opens a crash
 dump, a user-mode one (`.dmp`, as Windows Error Reporting leaves them in
 `%LOCALAPPDATA%\CrashDumps`) or a kernel one (`MEMORY.DMP`, the minidumps in
 `C:\Windows\Minidump`), in the Windows debugger engine, the engine of WinDbg,
@@ -483,9 +483,9 @@ and examines it with WinDbg's commands: `!analyze -v`, `k`, `lm`, `dt`, `.ecxr`,
 at the dump and the source.
 
 ```
-dbg_open     opens a dump (one at a time) and says what it is
-dbg_command  runs debugger commands on it
-dbg_close    closes it
+windebug_open     opens a dump (one at a time) and says what it is
+windebug_command  runs debugger commands on it
+windebug_close    closes it
 ```
 
 Only commands that read the dump run: stacks, threads, memory, types,
@@ -495,12 +495,12 @@ a file (`.dump`, `.writemem`, `.logopen`), reads one past the folder rules
 (`.readmem`, `.opendump`), starts live debugging (`.create`, `.attach`) or
 reaches all of those (`dx`, aliases, `.foreach`) is refused before the engine
 sees it, and the engine itself is set to refuse shell and execution commands.
-`dbg-allow-commands` names more commands to allow (`dbg-allow-commands = dx`),
+`windebug-allow-commands` names more commands to allow (`windebug-allow-commands = dx`),
 at your own risk. ESC stops a command partway through.
 
-The engine is found in this order: `dbg-path`, a folder with `dbgeng.dll`;
+The engine is found in this order: `windebug-path`, a folder with `dbgeng.dll`;
 the Debugging Tools for Windows (a feature of the Windows SDK installer); the
-engine that comes with tapto-code, in `plugins\dbg-engine`; and Windows' own,
+engine that comes with tapto-code, in `plugins\windebug-engine`; and Windows' own,
 in System32, which reads a dump but neither downloads symbols nor has
 `!analyze`. The one that comes with tapto-code is Microsoft's redistributable
 engine: it downloads symbols and reads stacks, locals, memory and types, but
@@ -508,7 +508,7 @@ has no extension commands, so no `!analyze` and few of the kernel ones
 (`!process`, `!thread`). For those, install the Debugging Tools for Windows,
 and tapto-code uses them instead. The WinDbg app from the Store cannot be used directly,
 since Windows lets no other program load its files, but a copy of its `amd64`
-folder can, through `dbg-path`. Symbols come from `dbg-symbol-path`, else
+folder can, through `windebug-path`. Symbols come from `windebug-symbol-path`, else
 `_NT_SYMBOL_PATH`, else Microsoft's symbol server through a cache in
 `%LOCALAPPDATA%\tapto\symbols`; downloading them sends the names of the
 dump's modules to that server, as any debugger does. The engine's extension

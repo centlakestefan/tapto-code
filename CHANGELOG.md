@@ -65,14 +65,14 @@ newer build never looks older than the one it replaces.
   `<name>-stream` for one (over `stream`), so a copy of a provider block can
   stream beside the original. With `print-cot` off nothing is shown until
   the reply is complete.
-- Crash dumps on Windows: `/add-plugin dbg` lets the model open a user-mode
+- Crash dumps on Windows: `/add-plugin windebug` lets the model open a user-mode
   or kernel dump in the Windows debugger engine and examine it with WinDbg's
   commands (`!analyze -v`, `k`, `lm`, `dt`, `!process`, ...). Only commands
   that read the dump run. tapto-code comes with Microsoft's debugger engine,
   which downloads symbols and reads stacks, locals and memory; `!analyze` and
   most kernel commands need the Debugging Tools for Windows, which are used
   instead when installed. Symbols come from Microsoft's symbol server unless
-  `dbg-symbol-path` or `_NT_SYMBOL_PATH` says otherwise.
+  `windebug-symbol-path` or `_NT_SYMBOL_PATH` says otherwise.
 - Plugins: tools beyond the core, installed in the `plugins` folder beside
   tapto-code. `/add-plugin <name>` gives the model a plugin's tools that only
   read, `/add-plugin <name> rw` also those that change things, and

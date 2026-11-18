@@ -6,6 +6,6 @@ Licensed under the Apache License, Version 2.0 (see the LICENSE file).
 The Windows build includes Microsoft's debugger engine (dbgeng.dll,
 dbghelp.dll, dbgcore.dll, dbgmodel.dll, msdia140.dll and symsrv.dll, from
 the Microsoft.Debugging.Platform.DbgEng and .SymSrv NuGet packages) in
-plugins\dbg-engine. Copyright Microsoft Corporation, redistributed under the
+plugins\windebug-engine. Copyright Microsoft Corporation, redistributed under the
 Microsoft Software License Terms for the Windows SDK:
 https://aka.ms/WinSDKLicenseURL. They are not covered by the Apache License.

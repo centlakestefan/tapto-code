@@ -1,6 +1,6 @@
-# The Windows debugger engine the dbg plugin ships with: Microsoft's
+# The Windows debugger engine the windebug plugin ships with: Microsoft's
 # redistributable DbgEng and SymSrv NuGet packages (the Windows SDK licence,
-# https://aka.ms/WinSDKLicenseURL), into plugins/dbg-engine beside the
+# https://aka.ms/WinSDKLicenseURL), into plugins/windebug-engine beside the
 # plugin, in the build tree and the install. With them the plugin opens a dump
 # with symbols downloaded on a machine without the Debugging Tools for
 # Windows. The extension DLLs (!analyze, the kernel extensions) are in neither
@@ -9,18 +9,18 @@
 #
 # Fetched at configure time, each package checked against its SHA-256, and
 # kept in the build tree, so a reconfigure does not download again.
-# -DTAPTO_DBG_ENGINE=OFF leaves them out, and the plugin uses the Debugging
+# -DTAPTO_WINDEBUG_ENGINE=OFF leaves them out, and the plugin uses the Debugging
 # Tools or System32's engine.
 
-option(TAPTO_DBG_ENGINE "Ship Microsoft's redistributable debugger engine with the dbg plugin" ON)
+option(TAPTO_WINDEBUG_ENGINE "Ship Microsoft's redistributable debugger engine with the windebug plugin" ON)
 
-set(_dbg_engine_version "20260319.1511.0")
-set(_dbg_engine_packages
+set(_windebug_engine_version "20260319.1511.0")
+set(_windebug_engine_packages
   "Microsoft.Debugging.Platform.DbgEng|875678516f9ceed4a1c8b9b106d165106fcaa38723ad7c584c47b95b231600de|dbgcore.dll,dbgeng.dll,dbghelp.dll,dbgmodel.dll,msdia140.dll"
   "Microsoft.Debugging.Platform.SymSrv|8d24440267581038de0101b36c0d75daf7f063d86f3d6adca61038c236df7ce7|symsrv.dll")
 
-function(tapto_dbg_engine)
-  if(NOT WIN32 OR NOT TAPTO_DBG_ENGINE)
+function(tapto_windebug_engine)
+  if(NOT WIN32 OR NOT TAPTO_WINDEBUG_ENGINE)
     return()
   endif()
   # The packages' folder for the architecture being built.
@@ -32,28 +32,28 @@ function(tapto_dbg_engine)
     set(_arch amd64)
   endif()
 
-  set(_cache "${CMAKE_BINARY_DIR}/_deps/dbg-engine")
-  set(_out "${CMAKE_BINARY_DIR}/plugins/dbg-engine")
+  set(_cache "${CMAKE_BINARY_DIR}/_deps/windebug-engine")
+  set(_out "${CMAKE_BINARY_DIR}/plugins/windebug-engine")
   set(_files "")
-  foreach(_entry IN LISTS _dbg_engine_packages)
+  foreach(_entry IN LISTS _windebug_engine_packages)
     string(REPLACE "|" ";" _entry "${_entry}")
     list(GET _entry 0 _id)
     list(GET _entry 1 _sha)
     list(GET _entry 2 _dlls)
     string(REPLACE "," ";" _dlls "${_dlls}")
     string(TOLOWER "${_id}" _lid)
-    set(_pkg "${_cache}/${_lid}.${_dbg_engine_version}.nupkg")
-    set(_dir "${_cache}/${_lid}.${_dbg_engine_version}")
+    set(_pkg "${_cache}/${_lid}.${_windebug_engine_version}.nupkg")
+    set(_dir "${_cache}/${_lid}.${_windebug_engine_version}")
     if(NOT EXISTS "${_dir}/.extracted")
-      message(STATUS "dbg plugin: fetching ${_id} ${_dbg_engine_version}")
+      message(STATUS "windebug plugin: fetching ${_id} ${_windebug_engine_version}")
       file(DOWNLOAD
-        "https://api.nuget.org/v3-flatcontainer/${_lid}/${_dbg_engine_version}/${_lid}.${_dbg_engine_version}.nupkg"
+        "https://api.nuget.org/v3-flatcontainer/${_lid}/${_windebug_engine_version}/${_lid}.${_windebug_engine_version}.nupkg"
         "${_pkg}" EXPECTED_HASH SHA256=${_sha} STATUS _st TLS_VERIFY ON)
       list(GET _st 0 _rc)
       if(NOT _rc EQUAL 0)
         list(GET _st 1 _msg)
-        message(WARNING "dbg plugin: ${_id} could not be fetched (${_msg}); the plugin will use the "
-                        "Debugging Tools for Windows or System32's engine. -DTAPTO_DBG_ENGINE=OFF silences this.")
+        message(WARNING "windebug plugin: ${_id} could not be fetched (${_msg}); the plugin will use the "
+                        "Debugging Tools for Windows or System32's engine. -DTAPTO_WINDEBUG_ENGINE=OFF silences this.")
         return()
       endif()
       file(REMOVE_RECURSE "${_dir}")
@@ -63,7 +63,7 @@ function(tapto_dbg_engine)
     foreach(_dll IN LISTS _dlls)
       set(_src "${_dir}/content/${_arch}/${_dll}")
       if(NOT EXISTS "${_src}")
-        message(WARNING "dbg plugin: ${_id} has no content/${_arch}/${_dll}")
+        message(WARNING "windebug plugin: ${_id} has no content/${_arch}/${_dll}")
         return()
       endif()
       list(APPEND _files "${_src}")
@@ -71,6 +71,6 @@ function(tapto_dbg_engine)
   endforeach()
 
   file(COPY ${_files} DESTINATION "${_out}")
-  install(FILES ${_files} DESTINATION "${TAPTO_PLUGIN_INSTALL_DIR}/dbg-engine")
-  message(STATUS "dbg plugin: Microsoft's debugger engine ${_dbg_engine_version} (${_arch}) in plugins/dbg-engine")
+  install(FILES ${_files} DESTINATION "${TAPTO_PLUGIN_INSTALL_DIR}/windebug-engine")
+  message(STATUS "windebug plugin: Microsoft's debugger engine ${_windebug_engine_version} (${_arch}) in plugins/windebug-engine")
 endfunction()

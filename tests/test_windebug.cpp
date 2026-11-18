@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Centlake Software AB
 //
-// The dbg plugin (plugins/dbg) from the host's side: the commands it refuses,
+// The windebug plugin (plugins/windebug) from the host's side: the commands it refuses,
 // and a real dump opened and read. The dump is of a child process (this test,
 // run with --sleep), written by another child (--dump), so dbghelp.dll is
 // never loaded here before the plugin loads its own beside dbgeng.
 //
-//   test-dbg <dbg module>
-//   test-dbg --sleep                (the process the dump is of)
-//   test-dbg --dump <pid> <file>    (writes it)
+//   test-windebug <windebug module>
+//   test-windebug --sleep                (the process the dump is of)
+//   test-windebug --dump <pid> <file>    (writes it)
 
 #ifndef WIN32_LEAN_AND_MEAN
 #  define WIN32_LEAN_AND_MEAN
@@ -144,7 +144,7 @@ public:
         if (r != scom::OK) return "(status " + std::to_string(r) + ")";
         return out.str();
     }
-    std::string command(const std::string& line) { return call("dbg_command", {{"command", line}}); }
+    std::string command(const std::string& line) { return call("windebug_command", {{"command", line}}); }
 
 private:
     TestHost& m_host;
@@ -192,13 +192,13 @@ int wmain(int argc, wchar_t** argv) {
     if (argc >= 4 && std::wcscmp(argv[1], L"--dump") == 0)
         return write_dump(static_cast<DWORD>(std::wcstoul(argv[2], nullptr, 10)), argv[3]);
     if (argc < 2) {
-        std::cerr << "usage: test-dbg <dbg module>\n";
+        std::cerr << "usage: test-windebug <windebug module>\n";
         return 2;
     }
 
     HMODULE module = LoadLibraryW(argv[1]);
     if (!module) {
-        std::cerr << "cannot load the dbg module\n";
+        std::cerr << "cannot load the windebug module\n";
         return 2;
     }
     auto get = reinterpret_cast<tapto::GetPluginFn>(GetProcAddress(module, tapto::kGetPluginExport));
@@ -218,26 +218,26 @@ int wmain(int argc, wchar_t** argv) {
         TaptoString d;
         CHECK_TRUE(plugin->Describe(d.out()) == scom::OK);
         const json desc = json::parse(d.str(), nullptr, false);
-        CHECK_TRUE(desc.value("name", "") == "dbg");
+        CHECK_TRUE(desc.value("name", "") == "windebug");
         std::string names;
         for (const auto& t : desc["tools"]) names += t.value("name", "") + " ";
-        CHECK_IN(names, "dbg_open ");
-        CHECK_IN(names, "dbg_command ");
-        CHECK_IN(names, "dbg_close ");
+        CHECK_IN(names, "windebug_open ");
+        CHECK_IN(names, "windebug_command ");
+        CHECK_IN(names, "windebug_close ");
     }
 
-    const fs::path dir = fs::temp_directory_path() / ("tapto-test-dbg-" + std::to_string(GetCurrentProcessId()));
+    const fs::path dir = fs::temp_directory_path() / ("tapto-test-windebug-" + std::to_string(GetCurrentProcessId()));
     fs::remove_all(dir);
     fs::create_directories(dir / "symbols");
     {
         // A local symbol folder of nothing: the test never downloads.
-        const json config = {{"dbg-symbol-path", (dir / "symbols").u8string()}};
+        const json config = {{"windebug-symbol-path", (dir / "symbols").u8string()}};
         CHECK_TRUE(plugin->Configure(config.dump().c_str()) == scom::OK);
     }
 
     Plugin p(host, plugin);
     test_refused(p);
-    CHECK_IN(p.call("dbg_open", json::object()), "ERROR: dbg_open needs");
+    CHECK_IN(p.call("windebug_open", json::object()), "ERROR: windebug_open needs");
 
     // A dump of a sleeping process.
     HANDLE sleeper = start_self(L"--sleep");
@@ -256,7 +256,7 @@ int wmain(int argc, wchar_t** argv) {
         CloseHandle(sleeper);
         CHECK_TRUE(code == 0);
 
-        std::string r = p.call("dbg_open", {{"path", dump.u8string()}});
+        std::string r = p.call("windebug_open", {{"path", dump.u8string()}});
         CHECK_IN(r, "a user-mode dump");
         CHECK_NOT_IN(r, "ERROR");
 
@@ -274,18 +274,18 @@ int wmain(int argc, wchar_t** argv) {
         CHECK_IN(r, "ERROR");
 
         // A second open replaces the first.
-        r = p.call("dbg_open", {{"path", dump.u8string()}});
+        r = p.call("windebug_open", {{"path", dump.u8string()}});
         CHECK_IN(r, "a user-mode dump");
         CHECK_IN(p.command("lm"), "ntdll");
 
-        CHECK_IN(p.call("dbg_close", json::object()), "Closed");
+        CHECK_IN(p.call("windebug_close", json::object()), "Closed");
         CHECK_IN(p.command("k"), "no dump is open");
-        CHECK_IN(p.call("dbg_close", json::object()), "No dump is open");
+        CHECK_IN(p.call("windebug_close", json::object()), "No dump is open");
 
         // Not a dump.
         const fs::path not_dump = dir / "not.dmp";
         std::ofstream(not_dump, std::ios::binary) << "hello";
-        CHECK_IN(p.call("dbg_open", {{"path", not_dump.u8string()}}), "ERROR");
+        CHECK_IN(p.call("windebug_open", {{"path", not_dump.u8string()}}), "ERROR");
     }
 
     tapto::ITaptoPluginUnload* unload = nullptr;
@@ -302,6 +302,6 @@ int wmain(int argc, wchar_t** argv) {
         std::cout << g_failures << " of " << g_checks << " checks failed\n";
         return 1;
     }
-    std::cout << "dbg: all " << g_checks << " checks passed\n";
+    std::cout << "windebug: all " << g_checks << " checks passed\n";
     return 0;
 }

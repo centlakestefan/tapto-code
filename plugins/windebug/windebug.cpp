@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Centlake Software AB
 
-// The dbg plugin: Windows crash dumps, user-mode and kernel, opened with the
+// The windebug plugin: Windows crash dumps, user-mode and kernel, opened with the
 // Windows debugger engine (dbgeng.dll, the engine of WinDbg and cdb) and
 // examined with WinDbg's own commands.
 //
-// Loaded with /add-plugin dbg, or `plugin.dbg = ro`. Its tools:
+// Loaded with /add-plugin windebug, or `plugin.windebug = ro`. Its tools:
 //
-//   dbg_open {path}       opens a dump (the host checks the path is one the
-//                         model may read), and says what it is: user or
-//                         kernel, the last event, the bug check
-//   dbg_command {command} runs debugger commands on it: !analyze -v, k, lm, ...
-//   dbg_close {}          closes it
+//   windebug_open {path}       opens a dump (the host checks the path is one the
+//                              model may read), and says what it is: user or
+//                              kernel, the last event, the bug check
+//   windebug_command {command} runs debugger commands on it: !analyze -v, k, lm, ...
+//   windebug_close {}          closes it
 //
 // One dump is open at a time, and it stays open between calls.
 //
@@ -20,11 +20,11 @@
 // The DLLs come from one folder, since dbgeng loads dbghelp beside itself and
 // dbghelp loads symsrv (symbol downloads) beside itself, and the extension
 // commands (!analyze, !process) come from winext\ and winxp\ beside them. In
-// order: `dbg-path`, the Debugging Tools for Windows of a Windows Kit, the
-// engine shipped in dbg-engine\ beside this plugin, and System32 last.
+// order: `windebug-path`, the Debugging Tools for Windows of a Windows Kit, the
+// engine shipped in windebug-engine\ beside this plugin, and System32 last.
 //
 // The shipped one is Microsoft's redistributable DbgEng and SymSrv (NuGet,
-// cmake/DbgEngine.cmake): dumps open and symbols download, but it has no
+// cmake/WinDebugEngine.cmake): dumps open and symbols download, but it has no
 // extension DLLs, so no !analyze and few kernel commands; the Debugging
 // Tools have them, and a user who wants them installs those. Windows has a
 // dbgeng.dll in System32 too, but no symsrv.dll and no extensions, so it
@@ -32,7 +32,7 @@
 //
 // The WinDbg app is not among them: Windows refuses any other program the
 // DLLs of an app's package folder (ERROR_ACCESS_DENIED). A copy of its
-// amd64 folder elsewhere loads, and dbg-path can name one.
+// amd64 folder elsewhere loads, and windebug-path can name one.
 //
 // The newer engines bring an extension gallery that downloads extensions
 // (and updates of ext.dll, at !analyze) from Microsoft's NuGet feed, and
@@ -52,7 +52,7 @@
 // alias, which could put back a command the check never saw. The engine
 // refuses shell and execution commands on its own as well
 // (DEBUG_ENGOPT_DISALLOW_SHELL_COMMANDS, _DISABLE_EXECUTION_COMMANDS).
-// `dbg-allow-commands` names more, for the user who wants them.
+// `windebug-allow-commands` names more, for the user who wants them.
 //
 // --- Threads --------------------------------------------------------------------
 //
@@ -114,7 +114,7 @@ SRESULT hand_out(std::string_view s, char*& out) {
 }
 
 void log(const std::string& line) {
-    if (tapto::ITaptoHost* h = tapto::plugin_host()) h->Log(("[dbg] " + line).c_str());
+    if (tapto::ITaptoHost* h = tapto::plugin_host()) h->Log(("[windebug] " + line).c_str());
 }
 
 void release_host() {
@@ -288,7 +288,7 @@ bool analyze_args_ok(const std::string& args) {
 
 class CommandCheck {
 public:
-    // Names the user allowed besides the built-in ones (dbg-allow-commands):
+    // Names the user allowed besides the built-in ones (windebug-allow-commands):
     // ".foo", "!bar" or a plain command.
     void allow(const std::set<std::string>& extra) { m_extra = extra; }
 
@@ -366,7 +366,7 @@ private:
             if (extra(name)) return {};
             if (!kDotCommands.count(name)) return refuse(name);
             if (kBareOnly.count(name) && !args.empty())
-                return "'" + name + "' only without arguments: the symbol path is the user's (dbg-symbol-path)";
+                return "'" + name + "' only without arguments: the symbol path is the user's (windebug-symbol-path)";
             return {};
         }
 
@@ -428,7 +428,7 @@ std::string shortfall(const std::wstring& folder) {
     if (missing.empty()) return {};
     return "The debugger engine in " + narrow(folder) + " is not a full one: " + missing +
            ". Install the Debugging Tools for Windows (a feature of the Windows SDK installer), or "
-           "set dbg-path to a full debugger folder, such as a copy of WinDbg's amd64 folder.\n";
+           "set windebug-path to a full debugger folder, such as a copy of WinDbg's amd64 folder.\n";
 }
 
 // The Debugging Tools of the installed Windows Kit, or empty.
@@ -446,7 +446,7 @@ std::wstring kits_folder() {
     return file_exists(dir + L"\\dbgeng.dll") ? dir : std::wstring();
 }
 
-// The engine shipped beside this plugin (plugins\dbg-engine), or empty.
+// The engine shipped beside this plugin (plugins\windebug-engine), or empty.
 std::wstring shipped_folder() {
     HMODULE self = nullptr;
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
@@ -458,7 +458,7 @@ std::wstring shipped_folder() {
     std::wstring dir(path, n);
     const auto slash = dir.find_last_of(L"\\/");
     if (slash == std::wstring::npos) return {};
-    dir = dir.substr(0, slash) + L"\\dbg-engine";
+    dir = dir.substr(0, slash) + L"\\windebug-engine";
     return file_exists(dir + L"\\dbgeng.dll") ? dir : std::wstring();
 }
 
@@ -640,30 +640,30 @@ const char* const kCommandHelp =
     "aliases, .shell, .load, and anything that writes files or runs code. Long output is "
     "saved whole to a file, with its start and end shown.";
 
-class DbgPlugin final : public scom::Base,
+class WinDebugPlugin final : public scom::Base,
                         public tapto::ITaptoPlugin,
                         public tapto::ITaptoPluginUnload {
 public:
-    SCOM_IMPLEMENT_BASE_EX(DbgPlugin, tapto::ITaptoPlugin)
-    SCOM_BEGIN_INTERFACE_MAP(DbgPlugin)
+    SCOM_IMPLEMENT_BASE_EX(WinDebugPlugin, tapto::ITaptoPlugin)
+    SCOM_BEGIN_INTERFACE_MAP(WinDebugPlugin)
         SCOM_INTERFACE(tapto::ITaptoPlugin)
         SCOM_INTERFACE(tapto::ITaptoPluginUnload)
     SCOM_END_INTERFACE_MAP()
 
     SRESULT SCOM_CALL Describe(char*& json_out) override {
         const json d = {
-            {"name", "dbg"},
+            {"name", "windebug"},
             {"version", "1.0.0"},
-            {"config_keys", {"dbg-path", "dbg-symbol-path", "dbg-allow-commands"}},
+            {"config_keys", {"windebug-path", "windebug-symbol-path", "windebug-allow-commands"}},
             {"tools", json::array({
                 {
-                    {"name", "dbg_open"},
+                    {"name", "windebug_open"},
                     {"description",
                      "Opens a Windows crash dump (.dmp: a user-mode minidump or full dump, "
                      "or a kernel dump such as MEMORY.DMP) in the Windows debugger engine, "
                      "closing the one open before, and says what it is: user or kernel, "
                      "the last event, the bug check. Symbols download as needed, so the "
-                     "first open of a kernel dump can take a while. Then use dbg_command, "
+                     "first open of a kernel dump can take a while. Then use windebug_command, "
                      "usually starting with !analyze -v."},
                     {"schema", {
                         {"type", "object"},
@@ -677,7 +677,7 @@ public:
                     {"writes", false},
                 },
                 {
-                    {"name", "dbg_command"},
+                    {"name", "windebug_command"},
                     {"description", kCommandHelp},
                     {"schema", {
                         {"type", "object"},
@@ -690,7 +690,7 @@ public:
                     {"writes", false},
                 },
                 {
-                    {"name", "dbg_close"},
+                    {"name", "windebug_close"},
                     {"description", "Closes the open dump."},
                     {"schema", {{"type", "object"}, {"properties", json::object()}}},
                     {"writes", false},
@@ -707,10 +707,10 @@ public:
                 return c.is_object() && c.contains(key) && c[key].is_string() ? c[key].get<std::string>()
                                                                                : std::string();
             };
-            m_path_setting = trim(str("dbg-path"));
-            m_symbol_setting = trim(str("dbg-symbol-path"));
+            m_path_setting = trim(str("windebug-path"));
+            m_symbol_setting = trim(str("windebug-symbol-path"));
             std::set<std::string> extra;
-            const std::string list = str("dbg-allow-commands");
+            const std::string list = str("windebug-allow-commands");
             std::size_t at = 0;
             while (at < list.size()) {
                 const std::size_t b = list.find_first_not_of(" ,\t", at);
@@ -733,14 +733,14 @@ public:
         try {
             const std::string tool = name ? name : "";
             const json args = json::parse(json_args ? json_args : "{}", nullptr, false);
-            if (tool == "dbg_open") {
+            if (tool == "windebug_open") {
                 result = open(args.is_object() ? args.value("path", std::string()) : std::string());
-            } else if (tool == "dbg_command") {
+            } else if (tool == "windebug_command") {
                 result = command(args.is_object() ? args.value("command", std::string()) : std::string());
-            } else if (tool == "dbg_close") {
+            } else if (tool == "windebug_close") {
                 result = close_dump();
             } else {
-                result = "ERROR: the dbg plugin has no tool " + tool;
+                result = "ERROR: the windebug plugin has no tool " + tool;
             }
         } catch (const std::exception& e) {
             result = std::string("ERROR: ") + e.what();
@@ -755,7 +755,7 @@ public:
     }
 
 private:
-    ~DbgPlugin() {
+    ~WinDebugPlugin() {
         shutdown();
         release_host();
     }
@@ -840,7 +840,7 @@ private:
         if (!m_engine.module) {
             std::vector<std::pair<std::wstring, std::string>> places;
             if (!m_path_setting.empty()) {
-                places.emplace_back(widen(m_path_setting), "dbg-path");
+                places.emplace_back(widen(m_path_setting), "windebug-path");
             } else {
                 places.emplace_back(kits_folder(), "the Windows Kit's Debugging Tools");
                 places.emplace_back(shipped_folder(), "the engine shipped with the plugin");
@@ -870,9 +870,9 @@ private:
             }
             if (!m_engine.module) {
                 return !m_path_setting.empty()
-                           ? "ERROR: no dbgeng.dll could be loaded from dbg-path (" + m_path_setting + ")"
+                           ? "ERROR: no dbgeng.dll could be loaded from windebug-path (" + m_path_setting + ")"
                            : "ERROR: no Windows debugger engine (dbgeng.dll) was found. Install the "
-                             "Debugging Tools for Windows, or set dbg-path to a folder with dbgeng.dll.";
+                             "Debugging Tools for Windows, or set windebug-path to a folder with dbgeng.dll.";
             }
         }
         auto create = reinterpret_cast<DebugCreateFn>(GetProcAddress(m_engine.module, "DebugCreate"));
@@ -931,7 +931,7 @@ private:
     }
 
     std::string open(const std::string& path) {
-        if (path.empty()) return "ERROR: dbg_open needs the dump's path";
+        if (path.empty()) return "ERROR: windebug_open needs the dump's path";
         auto out = std::make_shared<std::string>();
         const std::string stop = run([this, path, out] {
             std::string& result = *out;
@@ -963,7 +963,7 @@ private:
                 summary += "> " + std::string(cmd) + "\n" + m_engine.sink.take();
             }
             result = "Opened " + path + ", a " + (m_engine.kernel ? "kernel" : "user-mode") +
-                     " dump. Next: dbg_command '!analyze -v'.\n" + m_engine.note + "\n" + banner +
+                     " dump. Next: windebug_command '!analyze -v'.\n" + m_engine.note + "\n" + banner +
                      "\n" + summary;
         });
         return *out + stop;
@@ -971,16 +971,16 @@ private:
 
     std::string command(const std::string& line) {
         const std::string cmd = trim(line);
-        if (cmd.empty()) return "ERROR: dbg_command needs a command";
+        if (cmd.empty()) return "ERROR: windebug_command needs a command";
         if (const std::string why = m_check.check(cmd); !why.empty())
             return "ERROR: " + why + ". " +
                    "Only commands that read the dump run here; see the tool's description. "
-                   "The user can allow more with dbg-allow-commands.";
+                   "The user can allow more with windebug-allow-commands.";
         auto out = std::make_shared<std::string>();
         const std::string stop = run([this, cmd, out] {
             std::string& result = *out;
             if (!m_engine.open) {
-                result = "ERROR: no dump is open; open one with dbg_open";
+                result = "ERROR: no dump is open; open one with windebug_open";
                 return;
             }
             const HRESULT hr = m_engine.control->ExecuteWide(DEBUG_OUTCTL_THIS_CLIENT, widen(cmd).c_str(),
@@ -1023,7 +1023,7 @@ TAPTO_PLUGIN_EXPORT SRESULT SCOM_CALL TaptoGetPlugin(tapto::ITaptoHost* host,
         host->AddRef();
         tapto::plugin_host() = host;
     }
-    auto* p = new DbgPlugin;
+    auto* p = new WinDebugPlugin;
     const SRESULT r = p->QueryInterface(riid, ppv);
     p->Release();
     return r;

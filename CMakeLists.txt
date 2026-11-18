@@ -48,7 +48,7 @@ include(${tapto-cmake_SOURCE_DIR}/TaptoPin.cmake)
 # and outside it lib/tapto-code/plugins, where an installed tapto-code looks
 # for them. libtapto's default names the top-level project, which in the
 # installer's build is tapto-code-install. Set here, not left to libtapto,
-# since tapto_plugin() reads it in the scope that calls it, and dbg's is ours.
+# since tapto_plugin() reads it in the scope that calls it, and windebug's is ours.
 if(WIN32)
   set(TAPTO_PLUGIN_INSTALL_DIR "bin/plugins")
 else()
@@ -135,16 +135,16 @@ install(TARGETS tapto-code RUNTIME DESTINATION bin)
 # under the name the installer reads (every plugin it signs and scans for
 # runtime DLLs).
 #
-# dbg is tapto-code's own: Windows crash dumps, user-mode and kernel, read
+# windebug is tapto-code's own: Windows crash dumps, user-mode and kernel, read
 # with the Windows debugger engine (dbgeng.dll, loaded at run time, so nothing
 # is linked): the Debugging Tools for Windows when installed, else Microsoft's
-# redistributable engine shipped beside it (cmake/DbgEngine.cmake). Windows
+# redistributable engine shipped beside it (cmake/WinDebugEngine.cmake). Windows
 # only.
 if(WIN32)
-  tapto_plugin(tapto-plugin-dbg dbg plugins/dbg/dbg.cpp)
-  target_link_libraries(tapto-plugin-dbg PRIVATE nlohmann_json::nlohmann_json)
-  include(cmake/DbgEngine.cmake)
-  tapto_dbg_engine()
+  tapto_plugin(tapto-plugin-windebug windebug plugins/windebug/windebug.cpp)
+  target_link_libraries(tapto-plugin-windebug PRIVATE nlohmann_json::nlohmann_json)
+  include(cmake/WinDebugEngine.cmake)
+  tapto_windebug_engine()
 endif()
 get_property(_tapto_plugins GLOBAL PROPERTY TAPTO_PLUGINS)
 if(_tapto_plugins)
@@ -263,13 +263,13 @@ tapto_code_warnings(test-ui)
 
 add_test(NAME ui COMMAND test-ui)
 
-# The dbg plugin: the commands it refuses, and a minidump of a child process
+# The windebug plugin: the commands it refuses, and a minidump of a child process
 # opened and read through it. Loads the module directly, as the host does.
 if(WIN32)
-  add_executable(test-dbg tests/test_dbg.cpp)
-  target_include_directories(test-dbg PRIVATE "${libtapto_SOURCE_DIR}/include")
-  target_link_libraries(test-dbg PRIVATE nlohmann_json::nlohmann_json)
-  add_dependencies(test-dbg tapto-plugin-dbg)
-  tapto_code_warnings(test-dbg)
-  add_test(NAME dbg COMMAND test-dbg $<TARGET_FILE:tapto-plugin-dbg>)
+  add_executable(test-windebug tests/test_windebug.cpp)
+  target_include_directories(test-windebug PRIVATE "${libtapto_SOURCE_DIR}/include")
+  target_link_libraries(test-windebug PRIVATE nlohmann_json::nlohmann_json)
+  add_dependencies(test-windebug tapto-plugin-windebug)
+  tapto_code_warnings(test-windebug)
+  add_test(NAME windebug COMMAND test-windebug $<TARGET_FILE:tapto-plugin-windebug>)
 endif()
