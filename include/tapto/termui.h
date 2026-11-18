@@ -64,6 +64,13 @@ void print_transcript(const std::vector<TranscriptEntry>& entries, const std::st
 // Print a usage/diagnostic message to stderr.
 void print_usage(const std::string& text);
 
+// Headless (--headless): one turn and no terminal UI. The reply goes to
+// stdout as it came, without the Markdown styling; everything else -- each
+// tool call, the chain of thought, notices -- goes to stderr a line at a time,
+// with no status line redrawn in place and no ANSI styling when stderr is no
+// terminal. Set once, before the turn.
+void set_headless(bool on);
+
 
 // --- Chat session header ---------------------------------------------------
 

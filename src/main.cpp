@@ -43,6 +43,8 @@
 
 #ifdef _WIN32
 #include <conio.h>
+#include <shellapi.h> // CommandLineToArgvW
+#pragma comment(lib, "shell32.lib")
 #else
 #include <termios.h>
 #include <unistd.h>
@@ -87,6 +89,12 @@ const char* kUsage =
     "\n"
     "Usage:\n"
     "  tapto-code [--provider <name>] [--resume]     Start an interactive chat (default)\n"
+    "  tapto-code [--provider <name>] [--resume] --headless <prompt>\n"
+    "                                    Run one prompt and exit: the reply on\n"
+    "                                    stdout, tool calls and notices on stderr;\n"
+    "                                    exit code 0, or 1 when the turn failed.\n"
+    "                                    <prompt> - reads it from stdin. The saved\n"
+    "                                    conversation is used only with --resume\n"
     "  tapto-code [--system|--global|--local|--policy] config <command> [args]\n"
     "  tapto-code [--system|--global|--local|--policy] command <add|remove|list> ...\n"
     "\n"
@@ -1990,7 +1998,14 @@ bool poll_esc() {
 // `requested_provider` is the --provider argument, empty for the configured
 // default. `resume` is --resume: continue the conversation saved for this
 // folder instead of starting a new one.
-int cmd_chat(const std::string& requested_provider, bool resume) {
+// `headless` (--headless <prompt>): run that one prompt as a turn and exit, the
+// reply on stdout and the rest on stderr (ui::set_headless). Nothing is asked:
+// no setup, and no ESC to stop the turn. The folder's saved conversation is
+// neither read nor replaced, unless --resume asks to continue it, when the
+// turn is saved into it as an interactive one would be.
+int cmd_chat(const std::string& requested_provider, bool resume,
+             const std::optional<std::string>& headless = std::nullopt) {
+    if (headless) ui::set_headless(true);
     if (auto tf = get_effective("trace-file")) {
         mclog_set_file(*tf);
         // First line of every trace: which build wrote what follows. The file
@@ -2003,7 +2018,7 @@ int cmd_chat(const std::string& requested_provider, bool resume) {
     // missing — but only for the default provider: a name given on the command
     // line is taken at face value, so a typo is reported rather than answered
     // with a setup wizard that would configure something else.
-    const bool may_prompt = requested_provider.empty();
+    const bool may_prompt = requested_provider.empty() && !headless;
     bool ran_setup = false;
     if (may_prompt && !default_provider_name()) {
         if (!first_run_setup()) return 2; // setup prints its own errors
@@ -2120,7 +2135,9 @@ int cmd_chat(const std::string& requested_provider, bool resume) {
             stream = !(s == "false" || s == "0" || s == "off" || s == "no");
         }
         ai_config.setStream(stream);
-        if (stream && ai_config.printCot()) {
+        // Headless, the reply is written once, whole; the stream still serves
+        // the timeout.
+        if (stream && ai_config.printCot() && !headless) {
             ai_config.setStreamCallback([](const tapto::StreamEvent& ev) { ui::print_stream(ev); });
         }
     }
@@ -2222,11 +2239,12 @@ int cmd_chat(const std::string& requested_provider, bool resume) {
     // poll is installed once and runs inline in this thread at each tool-loop
     // checkpoint (no watcher thread).
     CancellationToken cancel_token;
-    cancel_token.setCheckFn(poll_esc);
+    // Headless, stdin is no keyboard (or is the prompt), so nothing polls it.
+    if (!headless) cancel_token.setCheckFn(poll_esc);
 
     // The resolved provider is printed, so a block wired to the wrong dialect or
     // URL shows up here rather than as malformed requests.
-    ui::print_banner(TAPTO_CODE_VERSION, provider_label(*provider), model, url);
+    if (!headless) ui::print_banner(TAPTO_CODE_VERSION, provider_label(*provider), model, url);
 
     // The conversation is saved after every turn, beside the folder's local
     // config, so a chat ended by accident (Ctrl-C, a closed window) can be
@@ -2238,7 +2256,7 @@ int cmd_chat(const std::string& requested_provider, bool resume) {
     // file only follows the current conversation, from its next turn on.
     const std::filesystem::path session_file = session_path();
     std::optional<SavedSession> saved;
-    {
+    if (!headless || resume) {
         std::string err;
         saved = load_session(session_file, err);
         if (!err.empty()) ui::print_warning("saved conversation ignored: " + err);
@@ -2359,7 +2377,7 @@ int cmd_chat(const std::string& requested_provider, bool resume) {
         }
         // Where the conversation stood, as it looked: about a screenful of its
         // end, sized so that it and the notice below both stay in view.
-        ui::print_transcript(session_transcript(next.history), msg);
+        if (!headless) ui::print_transcript(session_transcript(next.history), msg);
         ui::print_line(msg);
         persist();
     };
@@ -2368,6 +2386,27 @@ int cmd_chat(const std::string& requested_provider, bool resume) {
     } else if (saved) {
         ui::print_line("(a conversation from " + saved->saved_at + " is saved for this folder, " +
                        message_count(saved->history) + "; /resume continues it)");
+    }
+
+    if (headless) {
+        // A plugin's settings are taken in as before any turn.
+        bool changed = false;
+        if (const std::string note = plugins.before_turn(context, changed); !note.empty())
+            ui::print_line(note);
+        if (changed) rebuild_tools_and_prompt();
+
+        cancel_token.reset();
+        context.cancel = &cancel_token;
+        if (resume) persist(*headless);
+        int rc = 0;
+        try {
+            ui::print_reply(client->chat(context, *headless));
+        } catch (const std::exception& e) {
+            ui::print_error(e.what());
+            rc = 1;
+        }
+        if (resume) persist();
+        return rc;
     }
 #ifndef _WIN32
     // POSIX terminals deliver multi-line pastes via bracketed-paste markers.
@@ -2762,6 +2801,30 @@ int main(int argc, char** argv) {
     tapto::set_program_name("tapto-code"); // in what the library says
     enable_console_features();
 
+#ifdef _WIN32
+    // The arguments in UTF-8, as everything else is: Windows hands main() the
+    // ANSI code page's, in which a --headless prompt or a config value with
+    // å, ä or ö (or anything the code page lacks) arrives changed.
+    std::vector<std::string> utf8_args;
+    std::vector<char*> utf8_argv;
+    {
+        int n = 0;
+        if (LPWSTR* w = CommandLineToArgvW(GetCommandLineW(), &n)) {
+            for (int i = 0; i < n; ++i) {
+                const int len = WideCharToMultiByte(CP_UTF8, 0, w[i], -1, nullptr, 0, nullptr, nullptr);
+                std::string s(len > 0 ? len - 1 : 0, '\0');
+                if (len > 1) WideCharToMultiByte(CP_UTF8, 0, w[i], -1, s.data(), len, nullptr, nullptr);
+                utf8_args.push_back(std::move(s));
+            }
+            LocalFree(w);
+            for (auto& s : utf8_args) utf8_argv.push_back(s.data());
+            utf8_argv.push_back(nullptr);
+            argc = n;
+            argv = utf8_argv.data();
+        }
+    }
+#endif
+
     // The `command` subcommand is parsed specially: `command add` takes its
     // command line verbatim (it may contain tokens like --build or --config),
     // so we must not run it through the general flag extraction below. Only a
@@ -2787,6 +2850,7 @@ int main(int argc, char** argv) {
     std::vector<std::string> rest;
     std::string provider; // --provider <name>, empty for the configured default
     bool resume = false;  // --resume
+    std::optional<std::string> headless; // --headless <prompt>
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -2805,12 +2869,36 @@ int main(int argc, char** argv) {
         }
         else if (arg.rfind("--provider=", 0) == 0) provider = arg.substr(11);
         else if (arg == "--resume") resume = true;
+        else if (arg == "--headless") {
+            if (i + 1 >= argc) {
+                ui::print_error("--headless requires a prompt (or - to read it from stdin)");
+                return 2;
+            }
+            headless = argv[++i];
+        }
+        else if (arg.rfind("--headless=", 0) == 0) headless = arg.substr(11);
         else rest.push_back(std::move(arg));
+    }
+
+    if (headless) ui::set_headless(true); // its errors, too, plain when piped
+    if (headless && !rest.empty()) {
+        ui::print_error("--headless only applies to chat");
+        return 2;
+    }
+    if (headless && *headless == "-") {
+        // The prompt is all of stdin, a script's text or a file piped in.
+        std::ostringstream in;
+        in << std::cin.rdbuf();
+        headless = in.str();
+    }
+    if (headless && trim(*headless).empty()) {
+        ui::print_error("--headless: the prompt is empty");
+        return 2;
     }
 
     // No subcommand: start a chat (it's the default action).
     if (rest.empty()) {
-        return cmd_chat(provider, resume);
+        return cmd_chat(provider, resume, headless);
     }
     if (!provider.empty()) {
         ui::print_error("--provider only applies to chat");

@@ -14,6 +14,7 @@
 #  define WIN32_LEAN_AND_MEAN
 #  define NOMINMAX
 #  include <windows.h>
+#  include <io.h>
 #else
 #  include <sys/ioctl.h>
 #  include <unistd.h>
@@ -307,9 +308,8 @@ size_t terminal_height() {
     return 24;
 }
 
-// The columns a rendered line takes: display_width without the ANSI escape
-// sequences (colors, styles), which take none.
-size_t visible_width(const std::string& s) {
+// `s` without its ANSI escape sequences (colors, styles).
+std::string strip_ansi(const std::string& s) {
     std::string plain;
     plain.reserve(s.size());
     for (size_t i = 0; i < s.size(); ++i) {
@@ -320,7 +320,13 @@ size_t visible_width(const std::string& s) {
         }
         plain += s[i];
     }
-    return display_width(plain);
+    return plain;
+}
+
+// The columns a rendered line takes: display_width without the ANSI escape
+// sequences, which take none.
+size_t visible_width(const std::string& s) {
+    return display_width(strip_ansi(s));
 }
 
 // Clip a raw (pre-render) cell string to at most `max_cols` visible columns,
@@ -852,6 +858,25 @@ std::string render_markdown_impl(const std::string& text, size_t max_width) {
 bool        g_status_visible = false;
 std::string g_status_text;
 
+// --- Headless (set_headless) ------------------------------------------------
+
+bool g_headless = false;
+bool g_stderr_tty = true; // whether stderr keeps its ANSI styling, headless
+
+bool stderr_is_terminal() {
+#ifdef _WIN32
+    return _isatty(_fileno(stderr)) != 0;
+#else
+    return isatty(STDERR_FILENO) != 0;
+#endif
+}
+
+// One line of headless progress, to stderr.
+void headless_line(const std::string& text) {
+    if (g_stderr_tty) std::cerr << text << kReset << "\n" << std::flush;
+    else std::cerr << strip_ansi(text) << "\n" << std::flush;
+}
+
 // --- Streamed reply state ---------------------------------------------------
 //
 // A streamed reply is written as it arrives: the chain of thought dimmed, the
@@ -917,7 +942,17 @@ std::string render_markdown(const std::string& text, size_t max_width) {
 // Progress / status line
 // ---------------------------------------------------------------------------
 
+void set_headless(bool on) {
+    g_headless = on;
+    g_stderr_tty = stderr_is_terminal();
+}
+
 void set_status(const std::string& text, int iteration, int max_iterations) {
+    if (g_headless) {
+        // Not redrawn in place: kept, and written as a line once committed.
+        g_status_text = iteration_prefix(iteration, max_iterations) + text;
+        return;
+    }
     constexpr size_t kMaxWidth = 78;
 
     // clip_cell measures visible columns (UTF-8/wide-aware) and skips ANSI
@@ -935,6 +970,11 @@ void set_status(const std::string& text, int iteration, int max_iterations) {
 }
 
 void commit_status() {
+    if (g_headless) {
+        if (!g_status_text.empty()) headless_line(g_status_text);
+        g_status_text.clear();
+        return;
+    }
     if (!g_status_visible) return;
     note_output();
     std::cout << "\r" << g_status_text << "\x1b[K\n" << std::flush;
@@ -943,6 +983,10 @@ void commit_status() {
 }
 
 void end_status() {
+    if (g_headless) {
+        g_status_text.clear();
+        return;
+    }
     if (!g_status_visible) return;
     std::cout << "\r\x1b[K\x1b[?25h" << std::flush; // erase line + restore cursor
     g_status_visible = false;
@@ -955,6 +999,10 @@ void end_status() {
 
 void emit_intermediate(const std::string& text, bool is_reasoning, bool print_cot) {
     if (text.empty() || !print_cot) return;
+    if (g_headless) {
+        headless_line(is_reasoning ? std::string(kDim) + text : text);
+        return;
+    }
     note_output();
     if (g_status_visible) erase_status_line();
     if (is_reasoning)
@@ -1072,6 +1120,10 @@ void print_stream(const tapto::StreamEvent& ev) {
 }
 
 void print_reply(const std::string& text) {
+    if (g_headless) {
+        std::cout << trimmed(text) << "\n" << std::flush;
+        return;
+    }
     const size_t cols = terminal_width();
     const std::string reply = trimmed(text);
     const std::string streamed = trimmed(g_last_text);
@@ -1174,16 +1226,28 @@ void print_transcript(const std::vector<TranscriptEntry>& entries, const std::st
 }
 
 void print_line(const std::string& text) {
+    if (g_headless) {
+        headless_line(text);
+        return;
+    }
     note_output();
     std::cout << text << "\n";
 }
 
 void print_error(const std::string& text) {
+    if (g_headless && !g_stderr_tty) {
+        std::cerr << "error: " << strip_ansi(text) << "\n" << std::flush;
+        return;
+    }
     note_output();
     std::cerr << kRed << "error: " << text << kReset << "\n";
 }
 
 void print_warning(const std::string& text) {
+    if (g_headless && !g_stderr_tty) {
+        std::cerr << "warning: " << strip_ansi(text) << "\n" << std::flush;
+        return;
+    }
     note_output();
     std::cerr << kYellow << "warning: " << text << kReset << "\n";
 }

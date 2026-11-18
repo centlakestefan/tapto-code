@@ -12,6 +12,7 @@
 
 #include <cstddef>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -131,6 +132,7 @@ bool all_lines_fit(const std::string& rendered, size_t max_width) {
 
 int main() {
     using tapto::ui::render_markdown;
+    using namespace tapto::ui; // the headless output below
 
     // --- A table that fits renders as a clean, aligned box ------------------
     {
@@ -222,6 +224,35 @@ int main() {
         // The row renders as │ <cell padded to 6> │ = 1 + 1 + 6 + 1 + 1.
         CHECK_EQ_SZ(viswidth(strip_ansi(lines[1])), size_t{10});
         CHECK_TRUE(contains(rendered, "\xE6\x97\xA5\xE6\x9C\xAC\xE8\xAA\x9E")); // 日本語
+    }
+
+    // --- Headless (--headless): the reply alone on stdout, as it came; -----
+    // the tool calls and notices on stderr, a line each, none redrawn in
+    // place. Last, since it switches the output for the rest of the run.
+    {
+        std::ostringstream out, err;
+        std::streambuf* old_out = std::cout.rdbuf(out.rdbuf());
+        std::streambuf* old_err = std::cerr.rdbuf(err.rdbuf());
+        set_headless(true);
+        begin_turn_output();
+        set_status("Thinking", 1, 10);
+        end_status();                      // a status the turn moves past: not written
+        set_status("View note.txt", 2, 10);
+        commit_status();                   // a tool call: written as a line
+        emit_intermediate("Let me look.", false, true);
+        print_line("(a notice)");
+        print_reply("\n**The word** is `pelican`.\n\n");
+        std::cout.rdbuf(old_out);
+        std::cerr.rdbuf(old_err);
+
+        CHECK_EQ(out.str(), "**The word** is `pelican`.\n");
+        const std::string e = strip_ansi(err.str());
+        CHECK_TRUE(!contains(e, "Thinking"));
+        CHECK_TRUE(contains(e, "View note.txt\n"));
+        CHECK_TRUE(contains(e, "Let me look.\n"));
+        CHECK_TRUE(contains(e, "(a notice)\n"));
+        CHECK_TRUE(!contains(err.str(), "\r"));       // nothing redrawn in place
+        CHECK_TRUE(!contains(err.str(), "\x1b[?25")); // the cursor left alone
     }
 
     std::cout << (g_failures ? "FAILED " : "ok ") << (g_checks - g_failures) << "/" << g_checks

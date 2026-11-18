@@ -261,6 +261,30 @@ provider's own format, so it resumes only with a provider of the same type
 (claude, openai or gemini). The file holds whatever the model read, as the
 trace file does.
 
+**Headless: one prompt from a script.** `tapto-code --headless "<prompt>"`
+runs the prompt as one turn and exits, without the banner or the `>` prompt.
+The reply goes to stdout as plain text, without the Markdown styling; each
+tool call, the chain of thought (when `print-cot` is on) and any notice go to
+stderr, one line each, without colors when stderr is redirected. The exit code
+is 0 when the turn was answered, 1 when it failed (the provider could not be
+reached, a request was refused) and 2 for a usage or configuration error.
+`--headless -` reads the prompt from stdin, so a longer one can come from a
+file: `tapto-code --headless - < task.md > answer.md`.
+
+Nothing is asked along the way: there is no first-run setup, so the provider
+and its key must be configured already, and ESC does not stop the turn
+(Ctrl-C ends the program). The model works with the same tools, commands,
+folders and plugins as in a chat started in that folder. A headless run neither
+reads nor replaces the folder's saved conversation, unless `--resume` is
+given: then it continues that conversation and saves the turn into it, so a
+script can hold a conversation over several runs, and `tapto-code --resume`
+picks it up interactively afterwards.
+
+```sh
+tapto-code --headless "Summarize the changes in CHANGELOG.md since 1.2"
+{ echo "Review this diff for bugs:"; git diff; } | tapto-code --headless -
+```
+
 **The model's memory.** With the memory plugin (`plugin.memory = rw` in the
 config, or `/add-plugin memory rw`), the model keeps notes about the project in
 a folder of its own, `~/.tapto/projects/<folder>/plugins/memory/`, which it

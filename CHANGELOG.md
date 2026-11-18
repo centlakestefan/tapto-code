@@ -53,6 +53,10 @@ newer build never looks older than the one it replaces.
 
 ### Added
 
+- `tapto-code --headless "<prompt>"` runs one prompt from a script and exits:
+  the reply on stdout, tool calls and notices on stderr, exit code 0 or 1 for
+  an answered or failed turn. `--headless -` reads the prompt from stdin, and
+  with `--resume` the run continues the folder's saved conversation.
 - Streamed replies, a beta and off by default, for all three dialects: the
   chain of thought is written dimmed as the model thinks and the answer as it
   is written, then redrawn as Markdown in place. `read-timeout` waits for a
@@ -163,6 +167,9 @@ newer build never looks older than the one it replaces.
 
 ### Fixed
 
+- On Windows, a command-line argument with letters outside the system's code
+  page — a `config set` value, a `command add` command line — arrived changed.
+  Arguments are now read as typed, in any language.
 - A reply that hit `max-output-tokens` partway through a tool call left the
   call's cut-off arguments in the conversation, and llama.cpp and SGLang
   servers then refused every later request in the session. The cut-off call
