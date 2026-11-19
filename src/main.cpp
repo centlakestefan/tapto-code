@@ -124,9 +124,13 @@ const char* kUsage =
     "  after it), trace-file, connection-timeout\n"
     "  (seconds, default 30), read-timeout (seconds of silence from the server,\n"
     "  default 300; unstreamed, the whole answer), stream (beta, default false:\n"
-    "  true shows the reply as it arrives), and per provider\n"
-    "  <name>-reasoning-effort (openai dialect only: low, medium, high, ...) and\n"
-    "  <name>-stream (the provider's own stream, over the one above)\n"
+    "  true shows the reply as it arrives), auto-compact (default true: a\n"
+    "  conversation that outgrows the context window is summarized and the turn\n"
+    "  goes on), context-window (the model's window in tokens; unset, only the\n"
+    "  provider's refusal starts a compaction), and per provider\n"
+    "  <name>-reasoning-effort (openai dialect only: low, medium, high, ...),\n"
+    "  <name>-stream and <name>-context-window (the provider's own, over the\n"
+    "  ones above)\n"
     "\n"
     "A provider is a named block of keys, so several backends -- including two\n"
     "local servers speaking the same API -- coexist in one config store:\n"
@@ -192,7 +196,7 @@ bool has_suffix(const std::string& key, const std::string& suffix) {
 
 // The keys a provider block owns, each written as `<name>-<key>`.
 const char* kProviderBlockKeys[] = {"provider-type", "api-key", "provider-url", "model",
-                                    "reasoning-effort", "stream"};
+                                    "reasoning-effort", "stream", "context-window"};
 
 // A provider name has to survive a round trip through the `key = value` config
 // format, so it is limited to characters that can't be mistaken for syntax.
@@ -221,7 +225,7 @@ bool is_supported_config_key(const std::string& key) {
         "max-output-tokens", "max-tool-iterations", "system-prompt", "system-prompt-file",
         "system-prompt-append", "system-prompt-append-file", "trace-file", "print-cot",
         "connection-timeout", "read-timeout", "stream",
-        "reasoning-effort",
+        "reasoning-effort", "auto-compact", "context-window",
     };
     for (const char* k : kKeys) {
         if (key == k) return true;
@@ -241,9 +245,10 @@ const char* kSupportedKeysHelp =
     "provider, provider-url, model, api-key, "
     "max-output-tokens, max-tool-iterations, system-prompt, system-prompt-file, "
     "system-prompt-append, system-prompt-append-file, trace-file, print-cot, "
-    "connection-timeout, read-timeout, stream, plugin.<name> (ro, rw or off), "
+    "connection-timeout, read-timeout, stream, auto-compact, context-window, "
+    "plugin.<name> (ro, rw or off), "
     "per provider <name>-provider-type, <name>-provider-url, <name>-model, "
-    "<name>-api-key, <name>-reasoning-effort, <name>-stream, "
+    "<name>-api-key, <name>-reasoning-effort, <name>-stream, <name>-context-window, "
     "and the keys of an installed plugin, <plugin>-... (jira-url, jira-api-token, ...); "
     "any of them for one program alone after its name: tapto-code.print-cot, "
     "tapto-word.plugin.mcp, ...";
@@ -2126,6 +2131,32 @@ int cmd_chat(const std::string& requested_provider, bool resume,
                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         ai_config.setPrintCot(!(s == "false" || s == "0" || s == "off" || s == "no"));
     }
+    // Compaction inside a turn: a conversation that outgrows the model's
+    // context window is summarized and the turn goes on, rather than the
+    // provider refusing it. On unless auto-compact is off. The window, in
+    // tokens, is <name>-context-window (over the unscoped context-window);
+    // unknown, only the provider's refusal of a request as too long starts it.
+    {
+        bool compact = true;
+        if (auto v = get_effective("auto-compact")) {
+            std::string s = *v;
+            std::transform(s.begin(), s.end(), s.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            compact = !(s == "false" || s == "0" || s == "off" || s == "no");
+        }
+        ai_config.setCompactInTurn(compact);
+        std::optional<std::string> w = get_effective(provider->name + "-context-window");
+        if (!w) w = get_effective("context-window");
+        if (w) {
+            try {
+                const int n = std::stoi(*w);
+                if (n < 0) throw std::invalid_argument("negative");
+                ai_config.setContextWindow(n);
+            } catch (const std::exception&) {
+                ui::print_warning("invalid context-window '" + *w + "', taken as unknown");
+            }
+        }
+    }
     // Streamed replies, every dialect: the chain of
     // thought and the text are written as they arrive, read-timeout becomes
     // the longest silence rather than the whole answer, and ESC stops a reply
@@ -2358,10 +2389,36 @@ int cmd_chat(const std::string& requested_provider, bool resume,
     // A grant leaves the system prompt alone (folder_note tells the model);
     // the rebuild only matters when it changes the tools.
     chat_commands.folders_changed = [&]() { rebuild_tools_and_prompt(); };
+
+    // A turn that outgrows the context window is compacted inside it
+    // (auto-compact): libtapto summarizes the conversation and goes on from
+    // the summary. The notes that told the model of folder grants are gone
+    // with the old conversation, so a grant the system prompt does not hold
+    // goes into the new one as the state of the work.
+    ai_config.setCompactCallback([&](const tapto::CompactInfo&) -> std::string {
+        ui::end_status();
+        ui::print_line("\x1b[2m(the conversation outgrew the context window: it was summarized, "
+                       "and the turn goes on)\x1b[0m");
+        const std::string now = folder_prompt(folders);
+        told_folders = now;
+        if (now == prompt_folders) return {};
+        return now.empty() ? std::string("No folders outside the working directory are granted.") : now;
+    });
     chat_commands.progress = [](const std::string& text) { ui::print_line(text); };
 
     auto message_count = [](const nlohmann::json& history) {
         return std::to_string(history.size()) + (history.size() == 1 ? " message" : " messages");
+    };
+    // A conversation as the screen showed it: the tool calls labelled as the
+    // status line labels them, and the chain of thought while print-cot is
+    // on.
+    auto screen_transcript = [&](const nlohmann::json& history) {
+        TranscriptWork work;
+        work.label = [&](const std::string& tool, const nlohmann::json& input) {
+            return getToolDisplayName(context.tools, tool, input);
+        };
+        work.reasoning = ai_config.printCot();
+        return session_transcript(history, &work);
     };
     auto resume_saved = [&]() {
         if (!saved) {
@@ -2430,7 +2487,7 @@ int cmd_chat(const std::string& requested_provider, bool resume,
         }
         // Where the conversation stood, as it looked: about a screenful of its
         // end, sized so that it and the notice below both stay in view.
-        if (!headless) ui::print_transcript(session_transcript(next.history), msg);
+        if (!headless) ui::print_transcript(screen_transcript(next.history), msg);
         ui::print_line(msg);
         persist();
     };
@@ -2493,7 +2550,13 @@ int cmd_chat(const std::string& requested_provider, bool resume,
         // Reset the conversation (e.g. to recover after filling the context window).
         // The cleared conversation is kept for /resume, and stays in the file
         // until the next turn replaces it, so --resume undoes a /clear too.
+        const bool cot_before = ai_config.printCot();
         if (auto r = run_chat_command(line, chat_commands)) {
+            // /cot shows or hides the chain of thought in what is on the
+            // screen already, not only in what comes next: the history keeps
+            // it either way.
+            if (ai_config.printCot() != cot_before && client->hasHistory())
+                ui::redraw_transcript(screen_transcript(client->getHistory()));
             if (r->error) ui::print_error(r->text);
             else ui::print_line(r->text);
             continue;

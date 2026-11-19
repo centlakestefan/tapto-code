@@ -542,12 +542,15 @@ Chat config keys:
 | `<name>-model`  | no       | claude: `claude-sonnet-4-6`, openai: `gpt-4o`, gemini: `gemini-2.0-flash` |
 | `<name>-reasoning-effort` | no | unset — sent as `reasoning_effort` by the **openai** dialect only (e.g. `low`, `medium`, `high`); ignored with a warning on other dialects |
 | `<name>-stream` | no | unset — this provider's own `stream`, over the unscoped one. A copy of a provider block with `<copy>-stream = true` tries the beta beside the original |
+| `<name>-context-window` | no | unset — this provider's own `context-window`, over the unscoped one |
 | `max-output-tokens` | no   | `16000` — raise it for long replies (large tables, reports) |
 | `max-tool-iterations` | no | `200` — max tool-call rounds per reply before the agent stops |
 | `connection-timeout` | no  | `30` — seconds to wait for the provider to accept the connection |
 | `read-timeout`  | no       | `300` — seconds to wait while the server sends nothing. A streamed reply (`stream`) arrives in pieces, so this is in practice the wait for the first one; unstreamed, it is the whole answer, so raise it for a slow local model (a timeout shorter than the generation retries the same request until the retry budget is spent) |
 | `stream`        | no       | `false` — **beta**: `true` shows the reply as it arrives, the chain of thought dimmed and the answer redrawn as Markdown when it is complete, and ESC stops it partway through. With `print-cot` off the reply is not shown until it is complete, and the status line counts the characters received instead: `Thinking... (412 chars)`, then `Writing... (37 chars)`; `false` waits for the whole reply |
-| `print-cot`     | no       | `true` — show the model's intermediate reasoning/text during tool calls; set `false` to keep it in the trace file only |
+| `auto-compact`  | no       | `true` — a conversation that outgrows the model's context window is summarized in the middle of the turn, and the turn goes on from the summary; `false` leaves it to the provider to refuse the request, and to you to type `/compact` |
+| `context-window` | no      | unset — the model's context window in tokens, input and reply together. Known, a conversation is summarized before a request would not fit it, and a reply's limit is cut to what the window has left; unknown, only the provider's refusal of a request as too long starts a summary |
+| `print-cot`     | no       | `true` — show the model's chain of thought and its text between tool calls; `false` hides them. Only the display: the conversation keeps the chain of thought either way, so `/cot on` shows it later |
 | `system-prompt` | no       | built-in prompt — replaces it with a one-line value  |
 | `system-prompt-file` | no  | unset — replaces the built-in prompt with a text file's contents (see below) |
 | `system-prompt-append` | no | unset — added after the prompt, so project rules don't need a copy of the built-in one |
@@ -572,6 +575,10 @@ to remove a setting there, so the next level applies again:
 ```
 
 `/cot` or `/effort` alone shows the value in force and where it comes from.
+`print-cot` only decides what is shown: the chain of thought is kept in the
+conversation either way, so `/cot on` redraws the conversation on the screen
+with it, from the first prompt, and `/cot off` redraws it without. A
+resumed conversation shows it too.
 Folders granted with `/add-folder` are never saved: they last for the session
 they were given in.
 

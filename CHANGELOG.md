@@ -66,6 +66,17 @@ newer build never looks older than the one it replaces.
   stream beside the original. With `print-cot` off the reply is shown once it
   is complete, and until then the status line counts what has arrived:
   `Thinking... (412 chars)`, then `Writing... (37 chars)`.
+- A conversation that outgrows the model's context window is summarized in
+  the middle of the turn, and the turn goes on, instead of the provider
+  refusing it. `auto-compact = false` turns this off. Set the model's window
+  in tokens with `context-window` (or `<name>-context-window`) to have it
+  summarized before a request would not fit; without it, only the provider's
+  refusal starts a summary.
+- `/cot` shows or hides the chain of thought in the conversation already on
+  the screen, not only in what comes next: `/cot on` redraws the
+  conversation with the model's thinking, `/cot off` without. The thinking
+  is kept either way, and a resumed conversation shows it and the tool calls
+  as they were.
 - The chat shows the time you sent a prompt, dimmed at the right of its line,
   and the time the reply was done at the right of the reply's last line.
 - Crash dumps on Windows: `/add-plugin windebug` lets the model open a user-mode
@@ -170,6 +181,8 @@ newer build never looks older than the one it replaces.
 
 ### Fixed
 
+- An error that ended a turn partway was written on the same line as the
+  "Thinking..." status, run on from it; it now gets a line of its own.
 - `/add-folder` or `/remove-folder` in a long conversation made a local model
   read the whole conversation again before its next answer, which could take
   minutes, and cost a hosted provider its cache. The model is now told of the

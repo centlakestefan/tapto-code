@@ -1252,21 +1252,21 @@ void print_reply(const std::string& text) {
     begin_turn_output();
 }
 
-void print_transcript(const std::vector<TranscriptEntry>& entries, const std::string& after) {
-    if (entries.empty()) return;
-    const size_t cols = std::max<size_t>(terminal_width(), 1);
-    // The rows a line takes, wrapped at the terminal's width.
-    auto rows_of = [&](const std::string& line) {
-        const size_t w = visible_width(line);
-        return w == 0 ? size_t{1} : (w + cols - 1) / cols;
-    };
+namespace {
 
-    // Every entry rendered as it was on the screen, one string per line: the
-    // prompt in the prompt color behind its marker, the model's text as
-    // Markdown, a blank line between the two.
+// Every entry rendered as it was on the screen, one string per line: the
+// prompt in the prompt color behind its marker with a blank line on either
+// side, the chain of thought dimmed, each tool call behind its request's
+// counter, the model's text as Markdown.
+std::vector<std::string> transcript_lines(const std::vector<TranscriptEntry>& entries, size_t cols) {
+    using Who = TranscriptEntry::Who;
     std::vector<std::string> lines;
+    const TranscriptEntry* prev = nullptr;
     for (const auto& e : entries) {
-        if (!lines.empty()) lines.emplace_back();
+        const bool apart = e.who == Who::User || e.who == Who::Summary;
+        if (prev && (apart || prev->who == Who::User || prev->who == Who::Summary))
+            lines.emplace_back();
+        prev = &e;
         std::vector<std::string> block;
         switch (e.who) {
         case TranscriptEntry::Who::User: {
@@ -1288,11 +1288,50 @@ void print_transcript(const std::vector<TranscriptEntry>& entries, const std::st
         }
         case TranscriptEntry::Who::Summary:
             block.push_back(std::string(kDim) +
-                            "(the conversation before this was summarized with /compact)" + kReset);
+                            "(the conversation before this was summarized)" + kReset);
+            break;
+        case TranscriptEntry::Who::Reasoning: {
+            std::istringstream in(e.text);
+            std::string l;
+            while (std::getline(in, l)) {
+                std::string shown;
+                for (char c : l) shown += c == '\t' ? std::string("    ") : std::string(1, c);
+                block.push_back(std::string(kDim) + shown + kReset);
+            }
+            break;
+        }
+        case TranscriptEntry::Who::Tool:
+            block.push_back(iteration_prefix(e.iteration, 0) + e.text);
             break;
         }
         lines.insert(lines.end(), block.begin(), block.end());
     }
+    return lines;
+}
+
+} // namespace
+
+void redraw_transcript(const std::vector<TranscriptEntry>& entries) {
+    if (g_headless) return;
+    end_status();
+    // the screen, the scrollback, the cursor home
+    std::cout << "\x1b[0m\x1b[2J\x1b[3J\x1b[H";
+    const size_t cols = std::max<size_t>(terminal_width(), 1);
+    for (const auto& l : transcript_lines(entries, cols)) std::cout << l << "\n";
+    if (!entries.empty()) std::cout << "\n";
+    std::cout << std::flush;
+    note_output();
+}
+
+void print_transcript(const std::vector<TranscriptEntry>& entries, const std::string& after) {
+    if (entries.empty()) return;
+    const size_t cols = std::max<size_t>(terminal_width(), 1);
+    // The rows a line takes, wrapped at the terminal's width.
+    auto rows_of = [&](const std::string& line) {
+        const size_t w = visible_width(line);
+        return w == 0 ? size_t{1} : (w + cols - 1) / cols;
+    };
+    const std::vector<std::string> lines = transcript_lines(entries, cols);
 
     // About one screenful: the lines from the end that fit in the terminal's
     // height, less what is printed after them (`after`, the blank line that
@@ -1335,6 +1374,9 @@ void print_error(const std::string& text) {
         std::cerr << "error: " << strip_ansi(text) << "\n" << std::flush;
         return;
     }
+    // A status line still up (a turn that failed partway) goes first, or
+    // the message would run on from it.
+    end_status();
     note_output();
     std::cerr << kRed << "error: " << text << kReset << "\n";
 }
@@ -1344,6 +1386,9 @@ void print_warning(const std::string& text) {
         std::cerr << "warning: " << strip_ansi(text) << "\n" << std::flush;
         return;
     }
+    // A status line still up (a turn that failed partway) goes first, or
+    // the message would run on from it.
+    end_status();
     note_output();
     std::cerr << kYellow << "warning: " << text << kReset << "\n";
 }

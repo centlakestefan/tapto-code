@@ -3,6 +3,7 @@
 
 #include "tapto/session.h"
 
+#include "tapto/compact.h"
 #include "tapto/paths.h"
 
 #include <algorithm>
@@ -159,7 +160,99 @@ std::string without_folder_note(const std::string& text) {
     return text.substr(close + std::string(kNoteClose).size());
 }
 
-std::vector<TranscriptEntry> session_transcript(const json& history) {
+namespace {
+
+// Trailing blank lines and spaces do not show.
+void trim_end(std::string& text) {
+    const std::size_t end = text.find_last_not_of(" \t\r\n");
+    text.erase(end == std::string::npos ? 0 : end + 1);
+}
+
+// A model message's pieces in the order the screen showed them: the chain of
+// thought, the text, the tool calls. Texts in one message run on, joined as
+// each dialect splits them.
+void model_pieces(const json& msg, const TranscriptWork* work, int iteration,
+                  std::vector<TranscriptEntry>& out) {
+    using Who = TranscriptEntry::Who;
+    auto add = [&](Who who, std::string text, const char* sep) {
+        if (who == Who::Tool) {
+            out.push_back({who, std::move(text), iteration});
+            return;
+        }
+        if (!out.empty() && out.back().who == who && out.back().iteration == -iteration) {
+            // the same message's: run on
+            out.back().text += sep + text;
+            return;
+        }
+        // -iteration marks the entry as this message's until it is closed
+        out.push_back({who, std::move(text), -iteration});
+    };
+    auto tool = [&](const std::string& name, const json& input) {
+        if (!work) return;
+        add(Who::Tool, work->label ? work->label(name, input) : name, "");
+    };
+
+    // openai: the reasoning field, the content, the calls
+    const bool thoughts = work && work->reasoning;
+    if (thoughts) {
+        for (const char* field : {"reasoning_content", "reasoning"}) {
+            if (msg.contains(field) && msg[field].is_string() && !msg[field].get<std::string>().empty()) {
+                add(Who::Reasoning, msg[field].get<std::string>(), "");
+                break;
+            }
+        }
+    }
+    if (msg.contains("content")) {
+        const json& c = msg["content"];
+        if (c.is_string()) {
+            add(Who::Model, c.get<std::string>(), "");
+        } else if (c.is_array()) {
+            // claude blocks: text, thinking, tool_use in their order
+            for (const auto& block : c) {
+                if (!block.is_object()) continue;
+                const std::string type = block.value("type", std::string());
+                if (type == "text" && block.contains("text") && block["text"].is_string())
+                    add(Who::Model, block["text"].get<std::string>(), "\n");
+                else if (type == "thinking" && thoughts && block.contains("thinking") &&
+                         block["thinking"].is_string())
+                    add(Who::Reasoning, block["thinking"].get<std::string>(), "\n");
+                else if (type == "tool_use")
+                    tool(block.value("name", std::string()), block.value("input", json::object()));
+            }
+        }
+    }
+    if (msg.contains("tool_calls") && msg["tool_calls"].is_array()) {
+        for (const auto& call : msg["tool_calls"]) {
+            if (!call.is_object() || !call.contains("function") || !call["function"].is_object()) continue;
+            const json& fn = call["function"];
+            json input = json::object();
+            if (fn.contains("arguments") && fn["arguments"].is_string()) {
+                input = json::parse(fn["arguments"].get<std::string>(), nullptr, false);
+                if (input.is_discarded() || !input.is_object()) input = json::object();
+            }
+            tool(fn.value("name", std::string()), input);
+        }
+    }
+    if (msg.contains("parts") && msg["parts"].is_array()) {
+        // gemini: text parts run on, since one answer can come split over
+        // several; a thought is reasoning; functionCall a tool's
+        for (const auto& part : msg["parts"]) {
+            if (!part.is_object()) continue;
+            if (part.contains("text") && part["text"].is_string()) {
+                if (!part.value("thought", false)) add(Who::Model, part["text"].get<std::string>(), "");
+                else if (thoughts) add(Who::Reasoning, part["text"].get<std::string>(), "");
+            } else if (part.contains("functionCall") && part["functionCall"].is_object()) {
+                tool(part["functionCall"].value("name", std::string()),
+                     part["functionCall"].value("args", json::object()));
+            }
+        }
+    }
+}
+
+} // namespace
+
+std::vector<TranscriptEntry> session_transcript(const json& history, const TranscriptWork* work) {
+    using Who = TranscriptEntry::Who;
     // The message all three clients seed the history with after /compact
     // (libtapto's beginWithSummary).
     static const std::string kSummaryPrefix =
@@ -167,6 +260,7 @@ std::vector<TranscriptEntry> session_transcript(const json& history) {
 
     std::vector<TranscriptEntry> out;
     if (!history.is_array()) return out;
+    int iteration = 0; // the model's requests since the last prompt
 
     for (const auto& msg : history) {
         if (!msg.is_object()) continue;
@@ -174,6 +268,33 @@ std::vector<TranscriptEntry> session_transcript(const json& history) {
         const bool user = role == "user";
         const bool model = role == "assistant" || role == "model";
         if (!user && !model) continue; // openai's "tool" and "system" turns
+
+        if (model) {
+            ++iteration;
+            const std::size_t from = out.size();
+            std::vector<TranscriptEntry> pieces;
+            model_pieces(msg, work, iteration, pieces);
+            for (auto& e : pieces) {
+                if (e.who != Who::Tool) {
+                    // models open their answer with a line end or two after
+                    // the chain of thought; the screen did not show them
+                    e.text.erase(0, std::min(e.text.find_first_not_of("\r\n"), e.text.size()));
+                    trim_end(e.text);
+                    e.iteration = 0;
+                    if (e.text.empty()) continue;
+                }
+                // The texts around tool calls not shown are one answer.
+                if (e.who == Who::Model && !out.empty() && out.back().who == Who::Model) {
+                    out.back().text += "\n\n" + e.text;
+                } else if (e.who == Who::Reasoning && out.size() > from &&
+                           out.back().who == Who::Reasoning) {
+                    out.back().text += "\n" + e.text;
+                } else {
+                    out.push_back(std::move(e));
+                }
+            }
+            continue;
+        }
 
         // The message's text, and whether it also carries anything that is
         // not text the user or the model wrote.
@@ -214,27 +335,22 @@ std::vector<TranscriptEntry> session_transcript(const json& history) {
             }
         }
 
-        // Trailing blank lines and spaces do not show.
-        const std::size_t end = text.find_last_not_of(" \t\r\n");
-        text.erase(end == std::string::npos ? 0 : end + 1);
+        trim_end(text);
 
-        if (user) {
-            if (other) continue; // tool results and images, not a prompt
-            if (text.rfind(kSummaryPrefix, 0) == 0) {
-                out.push_back({TranscriptEntry::Who::Summary, std::string()});
-                continue;
-            }
-            text = without_folder_note(text);
-            if (!text.empty()) out.push_back({TranscriptEntry::Who::User, std::move(text)});
-        } else if (!text.empty()) {
-            // A model turn that only called tools has no text, and the texts
-            // around tool calls are one answer to the same prompt.
-            if (!out.empty() && out.back().who == TranscriptEntry::Who::Model) {
-                out.back().text += "\n\n" + text;
-            } else {
-                out.push_back({TranscriptEntry::Who::Model, std::move(text)});
-            }
+        if (other) continue; // tool results and images, not a prompt
+        iteration = 0;       // a prompt: its turn's requests count from 1
+        if (text.rfind(kSummaryPrefix, 0) == 0) {
+            out.push_back({Who::Summary, std::string()});
+            continue;
         }
+        // A compaction inside a turn (auto-compact) starts again from the
+        // task, then the summary: the marker, and the task as the prompt.
+        if (const std::string task = tapto::task_of_seed(text); task.size() != text.size()) {
+            out.push_back({Who::Summary, std::string()});
+            text = task;
+        }
+        text = without_folder_note(text);
+        if (!text.empty()) out.push_back({Who::User, std::move(text)});
     }
     return out;
 }

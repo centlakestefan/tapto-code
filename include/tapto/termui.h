@@ -64,8 +64,15 @@ std::string render_markdown(const std::string& text, size_t max_width);
 // a reply. `after` is what the caller prints next (the resume notice, the
 // folders, an unanswered prompt), counted with the prompt line below it, so
 // the start of what is shown stays on screen above them. An older part that
-// does not fit is not shown, and a line says so.
+// does not fit is not shown, and a line says so. The chain of thought is
+// dimmed and a tool call is a line of its own, as they were live.
 void print_transcript(const std::vector<TranscriptEntry>& entries, const std::string& after);
+
+// The whole conversation again, in place of what the screen holds: the
+// screen and its scrollback are cleared, and `entries` printed from the
+// first, as print_transcript prints them. For /cot, which shows or hides the
+// chain of thought in what is already there.
+void redraw_transcript(const std::vector<TranscriptEntry>& entries);
 
 // Print a usage/diagnostic message to stderr.
 void print_usage(const std::string& text);

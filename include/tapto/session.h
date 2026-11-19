@@ -4,6 +4,7 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -61,9 +62,22 @@ struct TranscriptEntry {
         User,    // a prompt the user typed
         Model,   // what the model wrote back (its text between tool calls too)
         Summary, // the /compact summary the conversation starts from; no text
+        // With the work (TranscriptWork):
+        Reasoning, // the model's chain of thought
+        Tool,      // a tool call: its label, as the status line showed it
     };
     Who who = Who::User;
     std::string text;
+    int iteration = 0; // a Tool's: the request of its turn that called it, from 1
+};
+
+// What session_transcript shows besides the prompts and the model's text:
+// the tool calls and, unless `reasoning` is off, the chain of thought; each call labelled by `label`
+// (the tool's name and its input; the status line's text). Without a label,
+// the tool's name.
+struct TranscriptWork {
+    std::function<std::string(const std::string& tool, const nlohmann::json& input)> label;
+    bool reasoning = true; // false: the tool calls only, as with print-cot off
 };
 
 // A folder granted or withdrawn in the middle of a conversation is told to
@@ -76,11 +90,13 @@ std::string with_folder_note(const std::string& note, const std::string& prompt)
 std::string without_folder_note(const std::string& text);
 
 // The conversation in `history`, any of the three dialects' shapes, as the
-// user saw it: their prompts and the model's text, in order. Tool calls, tool
-// results, images and the model's thinking are left out, and a user turn that
-// carries any of them is a tool's turn, not a prompt. The model's texts
-// between two prompts are joined into one entry.
-std::vector<TranscriptEntry> session_transcript(const nlohmann::json& history);
+// user saw it: their prompts and the model's text, in order. Tool results and
+// images are left out, and a user turn that carries any of them is a tool's
+// turn, not a prompt. The model's thinking and its tool calls are left out
+// too, unless `work` asks for them. The model's texts with nothing shown
+// between them are joined into one entry.
+std::vector<TranscriptEntry> session_transcript(const nlohmann::json& history,
+                                                const TranscriptWork* work = nullptr);
 
 // The prompts the line editor recalls with Up once a conversation is resumed,
 // oldest first: `typed` (what was entered earlier in this run), then the

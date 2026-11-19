@@ -8,6 +8,7 @@
 
 #include "tapto/session.h"
 
+#include "tapto/compact.h"
 #include "tapto/paths.h"
 
 #include <filesystem>
@@ -172,7 +173,13 @@ int main() {
         auto render = [](const std::vector<tapto::TranscriptEntry>& t) {
             std::string out;
             for (const auto& e : t) {
-                out += e.who == Who::User ? "U:" : e.who == Who::Model ? "M:" : "S:";
+                switch (e.who) {
+                case Who::User: out += "U:"; break;
+                case Who::Model: out += "M:"; break;
+                case Who::Summary: out += "S:"; break;
+                case Who::Reasoning: out += "R:"; break;
+                case Who::Tool: out += "T" + std::to_string(e.iteration) + ":"; break;
+                }
                 out += e.text + "|";
             }
             return out;
@@ -216,6 +223,33 @@ int main() {
         ])");
         CHECK_EQ(render(tapto::session_transcript(gemini)), "U:list files|M:There is a.cpp.|");
 
+        // With the work, as the screen showed it: the chain of thought, then
+        // each tool call behind the number of its turn's request.
+        tapto::TranscriptWork work;
+        work.label = [](const std::string& tool, const json& input) {
+            return tool + (input.contains("s") ? " " + input["s"].get<std::string>() : std::string());
+        };
+        CHECK_EQ(render(tapto::session_transcript(claude, &work)),
+                 "S:|U:fix the build|R:hmm|M:Looking at it.|T1:run_command|M:Fixed.|U:thanks|");
+        const json openai_work = json::parse(R"([
+            {"role":"user","content":"go"},
+            {"role":"assistant","content":null,"reasoning_content":"think",
+             "tool_calls":[{"id":"c1","type":"function","function":{"name":"view","arguments":"{\"s\":\"a.png\"}"}},
+                           {"id":"c2","type":"function","function":{"name":"view","arguments":"not json"}}]},
+            {"role":"tool","tool_call_id":"c1","content":"done"},
+            {"role":"tool","tool_call_id":"c2","content":"done"},
+            {"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,AA=="}}]},
+            {"role":"assistant","content":"Blue.","reasoning_content":"look\nagain"}
+        ])");
+        CHECK_EQ(render(tapto::session_transcript(openai_work, &work)),
+                 "U:go|R:think|T1:view a.png|T1:view|R:look\nagain|M:Blue.|");
+        CHECK_EQ(render(tapto::session_transcript(gemini, &work)),
+                 "U:list files|R:pondering|T1:find_files|M:There is a.cpp.|");
+        // print-cot off: the tool calls, not the thinking
+        work.reasoning = false;
+        CHECK_EQ(render(tapto::session_transcript(claude, &work)),
+                 "S:|U:fix the build|M:Looking at it.|T1:run_command|M:Fixed.|U:thanks|");
+
         // A folder note sent ahead of a prompt is the model's, not the
         // user's: the transcript (and so Up's recall) shows the prompt alone.
         const std::string sent = tapto::with_folder_note("Granted:\n  lib  (C:/lib)", "read lib/a.h");
@@ -229,6 +263,15 @@ int main() {
         CHECK_EQ(render(tapto::session_transcript(noted)), "U:read lib/a.h|M:Read it.|");
         const auto recalled = tapto::recall_history({}, noted, "", 10);
         CHECK_EQ(recalled.empty() ? std::string() : recalled.front(), "read lib/a.h");
+
+        // A compaction inside a turn starts again from one message: the task
+        // (with its folder note, when the first prompt had one) and the
+        // summary. The marker, then the task as the prompt.
+        json compacted = json::array();
+        compacted.push_back({{"role", "user"},
+                             {"content", tapto::compact_seed(sent, "and the tests", "did X", "")}});
+        compacted.push_back({{"role", "assistant"}, {"content", "Carrying on."}});
+        CHECK_EQ(render(tapto::session_transcript(compacted)), "S:|U:read lib/a.h|M:Carrying on.|");
 
         CHECK_EQ(render(tapto::session_transcript(json::object())), "");
         CHECK_EQ(render(tapto::session_transcript(json::parse(R"([1,"x",{"role":"user"}])"))), "");

@@ -56,7 +56,7 @@ else()
 endif()
 tapto_pin(libtapto
   GIT_REPOSITORY https://github.com/centlakestefan/libtapto.git
-  PIN            v0.9.13
+  PIN            v0.9.15
 )
 
 # --- Version stamp ----------------------------------------------------------
