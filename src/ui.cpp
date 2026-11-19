@@ -4,6 +4,8 @@
 #include "tapto/termui.h"
 
 #include <algorithm>
+#include <chrono>
+#include <ctime>
 #include <cstdint>
 #include <iostream>
 #include <sstream>
@@ -858,6 +860,18 @@ std::string render_markdown_impl(const std::string& text, size_t max_width) {
 bool        g_status_visible = false;
 std::string g_status_text;
 
+// What set_status was last given, so count_stream can redraw the line with
+// its counter and keep the iteration counter.
+std::string g_status_base;
+int         g_status_iteration = 0;
+int         g_status_max = 0;
+
+// count_stream: the characters of the current request, and when the line
+// was last redrawn for them.
+std::size_t g_count_reasoning = 0;
+std::size_t g_count_text = 0;
+std::chrono::steady_clock::time_point g_count_drawn;
+
 // --- Headless (set_headless) ------------------------------------------------
 
 bool g_headless = false;
@@ -947,12 +961,9 @@ void set_headless(bool on) {
     g_stderr_tty = stderr_is_terminal();
 }
 
-void set_status(const std::string& text, int iteration, int max_iterations) {
-    if (g_headless) {
-        // Not redrawn in place: kept, and written as a line once committed.
-        g_status_text = iteration_prefix(iteration, max_iterations) + text;
-        return;
-    }
+namespace {
+
+void draw_status(const std::string& text, int iteration, int max_iterations) {
     constexpr size_t kMaxWidth = 78;
 
     // clip_cell measures visible columns (UTF-8/wide-aware) and skips ANSI
@@ -967,6 +978,43 @@ void set_status(const std::string& text, int iteration, int max_iterations) {
 
     std::cout << "\r" << g_status_text << "\x1b[K" << std::flush;
     g_status_visible = true;
+}
+
+} // namespace
+
+void set_status(const std::string& text, int iteration, int max_iterations) {
+    // Each request starts with one: a new count.
+    g_count_reasoning = g_count_text = 0;
+    if (g_headless) {
+        // Not redrawn in place: kept, and written as a line once committed.
+        g_status_text = iteration_prefix(iteration, max_iterations) + text;
+        return;
+    }
+    g_status_base = text;
+    g_status_iteration = iteration;
+    g_status_max = max_iterations;
+    draw_status(text, iteration, max_iterations);
+}
+
+void count_stream(const tapto::StreamEvent& ev) {
+    using Kind = tapto::StreamEvent::Kind;
+    if (g_headless || ev.kind == Kind::End || ev.text.empty()) return;
+
+    // Characters, not bytes: each starts with an ASCII or a UTF-8 lead byte.
+    std::size_t chars = 0;
+    for (unsigned char c : ev.text) chars += (c & 0xC0) != 0x80;
+    (ev.kind == Kind::Reasoning ? g_count_reasoning : g_count_text) += chars;
+
+    // At most ten redraws a second: a local model sends a piece per token.
+    const auto now = std::chrono::steady_clock::now();
+    if (g_status_visible && now - g_count_drawn < std::chrono::milliseconds(100)) return;
+    g_count_drawn = now;
+
+    const bool writing = ev.kind == Kind::Text;
+    const std::size_t n = writing ? g_count_text : g_count_reasoning;
+    draw_status((writing ? std::string("Writing...") : g_status_base) + " (" + std::to_string(n) +
+                    (n == 1 ? " char)" : " chars)"),
+                g_status_iteration, g_status_max);
 }
 
 void commit_status() {
@@ -1054,7 +1102,42 @@ void close_stream_block() {
     g_stream_open = StreamOpen::None;
 }
 
+// The time of day, HH:MM:SS.
+std::string clock_now() {
+    const std::time_t now = std::time(nullptr);
+    std::tm tm{};
+#ifdef _WIN32
+    localtime_s(&tm, &now);
+#else
+    localtime_r(&now, &tm);
+#endif
+    char buf[16];
+    std::strftime(buf, sizeof(buf), "%H:%M:%S", &tm);
+    return buf;
+}
+
+// The columns the last row of `text` takes, as written from column 0 and
+// wrapped at `cols`; a trailing line end is not a row of its own.
+size_t last_row_width(std::string text, size_t cols) {
+    if (!text.empty() && text.back() == '\n') text.pop_back();
+    const size_t nl = text.rfind('\n');
+    const size_t w = visible_width(nl == std::string::npos ? text : text.substr(nl + 1));
+    cols = std::max<size_t>(cols, 1);
+    return w == 0 ? 0 : (w % cols == 0 ? cols : w % cols);
+}
+
 } // namespace
+
+void stamp_time_above(size_t used, size_t cols) {
+    if (g_headless || cols == 0) return;
+    // HH:MM:SS ending one column short of the edge (writing the last column
+    // can wrap), and only with two blank columns between it and the text.
+    constexpr size_t kWidth = 8;
+    if (used + 2 + kWidth + 1 > cols) return;
+    const size_t col = cols - kWidth; // 1-based column the stamp starts at
+    std::cout << "\x1b[1A\x1b[" << col << "G" << kDim << clock_now() << kReset << "\r\n"
+              << std::flush;
+}
 
 void begin_turn_output() {
     g_stream_open = StreamOpen::None;
@@ -1132,17 +1215,27 @@ void print_reply(const std::string& text) {
     // screen and all of it is in view, it is redrawn as Markdown in its place;
     // otherwise it stays as it is. What the reply adds after it (a note that
     // it was cut short) is printed below.
+    //
+    // Each case ends with the cursor on the row below the reply's last, and
+    // the time it finished goes at the right of that last row.
     if (!streamed.empty() && reply.compare(0, streamed.size(), streamed) == 0) {
         const size_t rows = rows_taken(g_last_text_shown, cols);
         const bool in_view = g_last_text_seq == g_output_seq && rows + 1 < terminal_height();
         if (in_view) {
-            std::cout << "\x1b[" << rows << "F\x1b[J"
-                      << render_markdown_impl(text, cols) << "\n";
+            const std::string shown = render_markdown_impl(text, cols);
+            std::cout << "\x1b[" << rows << "F\x1b[J" << shown;
+            stamp_time_above(last_row_width(shown, cols), cols);
         } else {
             const std::string rest = trimmed(reply.substr(streamed.size()));
-            if (!rest.empty()) std::cout << render_markdown_impl(rest, cols);
-            std::cout << "\n";
+            if (!rest.empty()) {
+                const std::string shown = render_markdown_impl(rest, cols);
+                std::cout << shown;
+                stamp_time_above(last_row_width(shown, cols), cols);
+            } else if (g_last_text_seq == g_output_seq) {
+                stamp_time_above(last_row_width(g_last_text_shown, cols), cols);
+            }
         }
+        std::cout << "\n";
         begin_turn_output();
         return;
     }
@@ -1152,7 +1245,10 @@ void print_reply(const std::string& text) {
         begin_turn_output();
         return;
     }
-    std::cout << render_markdown_impl(text, cols) << "\n";
+    const std::string shown = render_markdown_impl(text, cols);
+    std::cout << shown;
+    stamp_time_above(last_row_width(shown, cols), cols);
+    std::cout << "\n";
     begin_turn_output();
 }
 

@@ -44,6 +44,12 @@ void print_reply(const std::string& text);
 // the chain of thought dimmed, the text plain, a line end at the end of each.
 void print_stream(const tapto::StreamEvent& ev);
 
+// The stream callback when print-cot is off: nothing of the reply is written,
+// but the status line counts the characters received, "Thinking... (412
+// chars)" while the model reasons and "Writing... (37 chars)" once its answer
+// comes, so a long think does not look like a hang.
+void count_stream(const tapto::StreamEvent& ev);
+
 // Forget the streamed blocks of the turn before. Called as a turn starts.
 void begin_turn_output();
 
@@ -105,6 +111,13 @@ void print_prompt(const std::string& text);
 // Print a blank line after the user has submitted their prompt, separating
 // the input line from the model's response.
 void print_prompt_accepted();
+
+// Write the time of day, dim, at the right of the row above the cursor,
+// which is taken `used` columns of a `cols`-wide terminal; the cursor is
+// left at the start of its row. Nothing when the time does not fit beside
+// the text, or headless. The chat loop stamps the prompt it sends, and
+// print_reply the reply, so the two times show how long the turn took.
+void stamp_time_above(size_t used, size_t cols);
 
 
 // --- Config / command listing ---------------------------------------------

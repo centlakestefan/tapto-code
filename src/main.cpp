@@ -1255,6 +1255,11 @@ bool write_frame(const std::string& s) {
 #endif
 }
 
+// Where the editor left the last line it returned: the columns its last row
+// takes, of how many. Unknown (npos) when the line came another way.
+size_t g_input_end_col = std::string::npos;
+size_t g_input_cols = 0;
+
 // Read one line from a terminal, with the program doing its own line
 // editing (echo off). The arrow keys' ESC sequences are consumed as cursor
 // moves and history recall instead of being recorded as "[A" and friends.
@@ -1321,6 +1326,7 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
     // The screen row the cursor is on, counted from the block's first row (the
     // prompt's), so a reprint can move back up to the top before clearing.
     size_t cursor_row = 0;
+    size_t cursor_col = 0; // and its column
     // One-shot: reprint prints last_tab_candidates below the line and clears
     // this, so the list is shown only by the Tab that asked for it and is
     // erased by the next redraw (reprint always clears the rows below the
@@ -1444,6 +1450,7 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
             if (cur_col) buf += "\x1b[" + std::to_string(cur_col) + "C";
         }
         cursor_row = cur_row;
+        cursor_col = cur_col;
         write_frame(buf); // one frame: no mid-redraw flush
     };
 
@@ -1502,6 +1509,8 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
             pos = line.size();
             reprint();
         }
+        g_input_end_col = cursor_col;
+        g_input_cols = static_cast<size_t>(term_cols);
         std::cout << "\r\n" << std::flush;
         if (!line.empty()) {
             if (history.recall.empty() || history.recall.back() != line)
@@ -1892,6 +1901,7 @@ bool read_user_input(std::string& out, const std::string& prompt = "> ") {
     static const std::string kPasteStart = "\x1b[200~";
     static const std::string kPasteEnd   = "\x1b[201~";
 
+    g_input_end_col = std::string::npos;
     switch (edit_line(prompt, out)) {
     case EditResult::Line: return true;
     case EditResult::Eof: return false;
@@ -2119,8 +2129,8 @@ int cmd_chat(const std::string& requested_provider, bool resume,
     // Streamed replies, every dialect: the chain of
     // thought and the text are written as they arrive, read-timeout becomes
     // the longest silence rather than the whole answer, and ESC stops a reply
-    // partway through. With print-cot off nothing is shown until the reply
-    // is complete, as before; the stream still serves the timeout and ESC.
+    // partway through. With print-cot off nothing of the reply is shown
+    // until it is complete; the status line counts the characters received.
     // A beta, off unless asked for: `stream` for every provider, or
     // `<name>-stream` for one, which wins (a copy of a provider block with
     // the stream on runs beside the original to compare).
@@ -2137,8 +2147,11 @@ int cmd_chat(const std::string& requested_provider, bool resume,
         ai_config.setStream(stream);
         // Headless, the reply is written once, whole; the stream still serves
         // the timeout.
-        if (stream && ai_config.printCot() && !headless) {
-            ai_config.setStreamCallback([](const tapto::StreamEvent& ev) { ui::print_stream(ev); });
+        if (stream && !headless) {
+            if (ai_config.printCot())
+                ai_config.setStreamCallback([](const tapto::StreamEvent& ev) { ui::print_stream(ev); });
+            else
+                ai_config.setStreamCallback([](const tapto::StreamEvent& ev) { ui::count_stream(ev); });
         }
     }
     // Chosen by dialect, never by name: 'gemma4' is a name this program has
@@ -2472,6 +2485,10 @@ int cmd_chat(const std::string& requested_provider, bool resume,
         std::cout << "\x1b[0m" << std::flush;
         if (line == "/exit" || line == "/quit") break;
         if (line.empty()) continue;
+        // A prompt for the model gets the time it was sent at its right (a
+        // command does not), the reply the time it was done.
+        if (line[0] != '/' && g_input_end_col != std::string::npos)
+            ui::stamp_time_above(g_input_end_col, g_input_cols);
 
         // Reset the conversation (e.g. to recover after filling the context window).
         // The cleared conversation is kept for /resume, and stays in the file

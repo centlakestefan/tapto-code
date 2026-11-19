@@ -63,8 +63,11 @@ newer build never looks older than the one it replaces.
   silence rather than the whole answer, and ESC stops a reply partway through
   instead of after it. `stream = true` turns it on for every provider, and
   `<name>-stream` for one (over `stream`), so a copy of a provider block can
-  stream beside the original. With `print-cot` off nothing is shown until
-  the reply is complete.
+  stream beside the original. With `print-cot` off the reply is shown once it
+  is complete, and until then the status line counts what has arrived:
+  `Thinking... (412 chars)`, then `Writing... (37 chars)`.
+- The chat shows the time you sent a prompt, dimmed at the right of its line,
+  and the time the reply was done at the right of the reply's last line.
 - Crash dumps on Windows: `/add-plugin windebug` lets the model open a user-mode
   or kernel dump in the Windows debugger engine and examine it with WinDbg's
   commands (`!analyze -v`, `k`, `lm`, `dt`, `!process`, ...). Only commands

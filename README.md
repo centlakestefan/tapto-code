@@ -217,7 +217,10 @@ Running `tapto-code` with no subcommand starts an interactive chat with the
 configured AI provider (chat is the default action); `--provider <name>` picks a
 different one for this session.
 It prints a `>` prompt, reads a line, sends it to the provider, prints the
-reply, and repeats. Type `/exit` (or Ctrl-D) to quit.
+reply, and repeats. Type `/exit` (or Ctrl-D) to quit. The time you sent a
+prompt shows dimmed at the right of its line, and the time the reply was
+done at the right of the reply's last line, so you can see how long a turn
+took.
 
 In-session slash commands: `/clear` (reset the conversation — useful to recover
 after filling the model's context window), `/compact`, `/env`,
@@ -543,7 +546,7 @@ Chat config keys:
 | `max-tool-iterations` | no | `200` — max tool-call rounds per reply before the agent stops |
 | `connection-timeout` | no  | `30` — seconds to wait for the provider to accept the connection |
 | `read-timeout`  | no       | `300` — seconds to wait while the server sends nothing. A streamed reply (`stream`) arrives in pieces, so this is in practice the wait for the first one; unstreamed, it is the whole answer, so raise it for a slow local model (a timeout shorter than the generation retries the same request until the retry budget is spent) |
-| `stream`        | no       | `false` — **beta**: `true` shows the reply as it arrives, the chain of thought dimmed and the answer redrawn as Markdown when it is complete, and ESC stops it partway through; `false` waits for the whole reply |
+| `stream`        | no       | `false` — **beta**: `true` shows the reply as it arrives, the chain of thought dimmed and the answer redrawn as Markdown when it is complete, and ESC stops it partway through. With `print-cot` off the reply is not shown until it is complete, and the status line counts the characters received instead: `Thinking... (412 chars)`, then `Writing... (37 chars)`; `false` waits for the whole reply |
 | `print-cot`     | no       | `true` — show the model's intermediate reasoning/text during tool calls; set `false` to keep it in the trace file only |
 | `system-prompt` | no       | built-in prompt — replaces it with a one-line value  |
 | `system-prompt-file` | no  | unset — replaces the built-in prompt with a text file's contents (see below) |
