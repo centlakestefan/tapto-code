@@ -181,6 +181,10 @@ newer build never looks older than the one it replaces.
 
 ### Fixed
 
+- With streamed replies, `/cot off` hid the chain of thought on the screen
+  but the next replies still wrote it out as they arrived, and `/cot on` did
+  not bring it back to them either; what was shown was decided at start.
+  Each streamed reply now follows `/cot` as it is set.
 - An error that ended a turn partway was written on the same line as the
   "Thinking..." status, run on from it; it now gets a line of its own.
 - `/add-folder` or `/remove-folder` in a long conversation made a local model

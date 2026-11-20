@@ -2178,11 +2178,14 @@ int cmd_chat(const std::string& requested_provider, bool resume,
         ai_config.setStream(stream);
         // Headless, the reply is written once, whole; the stream still serves
         // the timeout.
+        // print-cot is looked up for each event, not once here: /cot changes
+        // it between turns.
         if (stream && !headless) {
-            if (ai_config.printCot())
-                ai_config.setStreamCallback([](const tapto::StreamEvent& ev) { ui::print_stream(ev); });
-            else
-                ai_config.setStreamCallback([](const tapto::StreamEvent& ev) { ui::count_stream(ev); });
+            const AiConfig* cfg = &ai_config;
+            ai_config.setStreamCallback([cfg](const tapto::StreamEvent& ev) {
+                if (cfg->printCot()) ui::print_stream(ev);
+                else ui::count_stream(ev);
+            });
         }
     }
     // Chosen by dialect, never by name: 'gemma4' is a name this program has
