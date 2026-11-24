@@ -181,6 +181,10 @@ newer build never looks older than the one it replaces.
 
 ### Fixed
 
+- A line of the reply with a `|` in it, such as a shell pipe or `a | b`,
+  was drawn as a table, and the lines after it with one too. A table now
+  needs a header row with a delimiter row under it (`|---|---|`, one cell
+  per column), as in GitHub's Markdown, and `\|` is a pipe inside a cell.
 - With streamed replies, `/cot off` hid the chain of thought on the screen
   but the next replies still wrote it out as they arrived, and `/cot on` did
   not bring it back to them either; what was shown was decided at start.

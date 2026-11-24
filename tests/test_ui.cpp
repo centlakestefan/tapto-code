@@ -226,6 +226,39 @@ int main() {
         CHECK_TRUE(contains(rendered, "\xE6\x97\xA5\xE6\x9C\xAC\xE8\xAA\x9E")); // 日本語
     }
 
+    // --- A '|' in prose is not a table: only a header with a delimiter row
+    //     under it starts one ------------------------------------------------
+    {
+        const std::string box = "\xE2\x94\x8C"; // ┌, the table's top-left corner
+        // A sentence, a shell pipe, and lines with pipes but no delimiter row.
+        const std::string prose =
+            "Run `dir | findstr foo` to filter.\n"
+            "a | b\n"
+            "c | d\n";
+        const std::string r1 = strip_ansi(render_markdown(prose, 80));
+        CHECK_TRUE(!contains(r1, box));
+        CHECK_TRUE(contains(r1, "a | b"));
+        CHECK_TRUE(contains(r1, "c | d"));
+
+        // A delimiter row with the wrong number of cells is no table either.
+        const std::string r2 = strip_ansi(render_markdown("| a | b |\n| --- |\n", 80));
+        CHECK_TRUE(!contains(r2, box));
+
+        // A real table ends at a blank line (or one without a '|'); a pipe in
+        // prose after it stays prose.
+        const std::string md =
+            "| A | B |\n"
+            "|:--|--:|\n"
+            "| 1 | x \\| y |\n"
+            "\n"
+            "Then pipe it: a | b";
+        const std::string r3 = strip_ansi(render_markdown(md, 80));
+        CHECK_TRUE(contains(r3, box));
+        CHECK_TRUE(contains(r3, "x | y")); // \| is a pipe inside the cell
+        CHECK_TRUE(contains(r3, "Then pipe it: a | b"));
+        CHECK_EQ_SZ(lines_of(r3).size(), size_t{7}); // the box of 5, blank, the line
+    }
+
     // --- Headless (--headless): the reply alone on stdout, as it came; -----
     // the tool calls and notices on stderr, a line each, none redrawn in
     // place. Last, since it switches the output for the rest of the run.

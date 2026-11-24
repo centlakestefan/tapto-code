@@ -197,7 +197,10 @@ std::vector<std::string> split_table_row(const std::string& line) {
     if (i < n && line[i] == '|') ++i;
     std::string cell;
     for (; i < n; ++i) {
-        if (line[i] == '|') {
+        if (line[i] == '\\' && i + 1 < n && line[i + 1] == '|') {
+            cell += '|'; // \| is a pipe inside the cell
+            ++i;
+        } else if (line[i] == '|') {
             // Trim whitespace.
             size_t s = cell.find_first_not_of(' ');
             size_t e = cell.find_last_not_of(' ');
@@ -229,9 +232,47 @@ bool is_table_separator(const std::string& line) {
     return has_dash;
 }
 
-// Returns true if the line looks like a table row (contains at least one '|').
+// Returns true if the line could be a table row (contains at least one '|').
+// Only a row with a delimiter row under it starts a table (table_rows_of).
 bool is_table_row(const std::string& line) {
     return line.find('|') != std::string::npos;
+}
+
+// The GFM delimiter row under a header of `columns` cells: a '|' in it, and
+// one cell of the form :?-+:? per column. A line of prose with a '|' in it
+// has none under it, so it stays prose.
+bool is_delimiter_row(const std::string& line, size_t columns) {
+    if (!is_table_row(line) || !is_table_separator(line)) return false;
+    const auto cells = split_table_row(line);
+    if (cells.size() != columns) return false;
+    for (const auto& c : cells) {
+        size_t b = 0, e = c.size();
+        if (b < e && c[b] == ':') ++b;
+        if (b < e && c[e - 1] == ':') --e;
+        if (b == e || c.find_first_not_of('-', b) < e) return false;
+    }
+    return true;
+}
+
+// What each line is in a table: 0 not in one, 1 the header, 2 the delimiter
+// row, 3 a body row. A table runs from a header with its delimiter row to
+// the first line without a '|' (or a blank line, or a code fence).
+std::vector<char> table_rows_of(const std::vector<std::string>& lines) {
+    std::vector<char> role(lines.size(), 0);
+    bool in_fence = false;
+    for (size_t i = 0; i < lines.size(); ++i) {
+        if (lines[i].compare(0, 3, "```") == 0) { in_fence = !in_fence; continue; }
+        if (in_fence || !is_table_row(lines[i]) || i + 1 >= lines.size()) continue;
+        if (!is_delimiter_row(lines[i + 1], split_table_row(lines[i]).size())) continue;
+        role[i] = 1;
+        role[i + 1] = 2;
+        size_t j = i + 2;
+        while (j < lines.size() && is_table_row(lines[j]) &&
+               lines[j].compare(0, 3, "```") != 0)
+            role[j++] = 3;
+        i = j - 1;
+    }
+    return role;
 }
 
 // Strip inline Markdown markers (* ` _) so we can measure the visible glyph
@@ -740,7 +781,10 @@ std::string render_markdown_impl(const std::string& text, size_t max_width) {
         table_rows.clear();
     };
 
-    for (const std::string& raw : lines) {
+    const std::vector<char> table_role = table_rows_of(lines);
+
+    for (size_t li = 0; li < lines.size(); ++li) {
+        const std::string& raw = lines[li];
 
         // ---- Fenced code block toggle --------------------------------------
         if (raw.size() >= 3 && raw.substr(0, 3) == "```") {
@@ -765,19 +809,17 @@ std::string render_markdown_impl(const std::string& text, size_t max_width) {
         }
 
         // ---- Table rows ----------------------------------------------------
-        if (is_table_row(raw)) {
-            if (is_table_separator(raw)) {
-                // Separator row: marks end of header, start of body — skip.
-                continue;
-            }
-            auto cells = split_table_row(raw);
-            if (!in_table) {
-                // First pipe-row is the header.
-                in_table     = true;
-                table_header = std::move(cells);
-            } else {
-                table_rows.push_back(std::move(cells));
-            }
+        // Only rows that table_rows_of found under a header and delimiter row:
+        // a '|' in a sentence is not a table.
+        if (table_role[li] == 1) {
+            flush_table(); // a table straight after another
+            in_table     = true;
+            table_header = split_table_row(raw);
+            continue;
+        }
+        if (table_role[li] == 2) continue; // the delimiter row
+        if (table_role[li] == 3) {
+            table_rows.push_back(split_table_row(raw));
             continue;
         }
 
