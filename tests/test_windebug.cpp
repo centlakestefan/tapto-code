@@ -6,7 +6,7 @@
 // run with --sleep), written by another child (--dump), so dbghelp.dll is
 // never loaded here before the plugin loads its own beside dbgeng.
 //
-//   test-windebug <windebug module>
+//   test-windebug <windebug module> [<engine folder>]
 //   test-windebug --sleep                (the process the dump is of)
 //   test-windebug --dump <pid> <file>    (writes it)
 
@@ -192,7 +192,7 @@ int wmain(int argc, wchar_t** argv) {
     if (argc >= 4 && std::wcscmp(argv[1], L"--dump") == 0)
         return write_dump(static_cast<DWORD>(std::wcstoul(argv[2], nullptr, 10)), argv[3]);
     if (argc < 2) {
-        std::cerr << "usage: test-windebug <windebug module>\n";
+        std::cerr << "usage: test-windebug <windebug module> [<engine folder>]\n";
         return 2;
     }
 
@@ -231,7 +231,10 @@ int wmain(int argc, wchar_t** argv) {
     fs::create_directories(dir / "symbols");
     {
         // A local symbol folder of nothing: the test never downloads.
-        const json config = {{"windebug-symbol-path", (dir / "symbols").u8string()}};
+        json config = {{"windebug-symbol-path", (dir / "symbols").u8string()}};
+        // An engine folder to test instead of the one the plugin would find
+        // (the shipped engine, System32): windebug-path.
+        if (argc >= 3) config["windebug-path"] = fs::path(argv[2]).u8string();
         CHECK_TRUE(plugin->Configure(config.dump().c_str()) == scom::OK);
     }
 
@@ -274,10 +277,13 @@ int wmain(int argc, wchar_t** argv) {
         CHECK_IN(r, "ERROR");
         // An extension command: run by a full engine, and by one without the
         // extension DLLs (the shipped engine) answered in one line that says why.
+        // Which one is told by that line alone: a full engine's !analyze writes
+        // ERROR lines of its own, for the symbols this test does not have.
         r = p.command("!analyze -v");
-        const bool full = r.find("ERROR") == std::string::npos;
+        const bool full = r.find("not in this debugger engine") == std::string::npos;
         if (full) {
             CHECK_IN(r, "> !analyze -v");
+            CHECK_IN(r, "Exception Analysis");
         } else {
             CHECK_IN(r, "not in this debugger engine");
             CHECK_IN(p.command("k; !ext.heap -s"), "not in this debugger engine");
