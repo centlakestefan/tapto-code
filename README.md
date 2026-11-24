@@ -217,15 +217,24 @@ Running `tapto-code` with no subcommand starts an interactive chat with the
 configured AI provider (chat is the default action); `--provider <name>` picks a
 different one for this session.
 It prints a `>` prompt, reads a line, sends it to the provider, prints the
-reply, and repeats. Type `/exit` (or Ctrl-D) to quit. The time you sent a
+reply, and repeats. Type `/exit` (or just `exit`, or Ctrl-D) to quit. The time you sent a
 prompt shows dimmed at the right of its line, and the time the reply was
 done at the right of the reply's last line, so you can see how long a turn
 took.
 
 In-session slash commands: `/clear` (reset the conversation — useful to recover
 after filling the model's context window), `/compact`, `/env`,
-`/list-commands`, `/add-command <name> <command...>`, `/resume`, and the folder
-commands below.
+`/list-commands`, `/add-command <name> <command...>`, `/resume`, and the
+folder commands below. Typing `/` opens a menu of them under the prompt,
+narrowed as you type: Up and Down choose, Tab fills the name in, Enter runs the
+command (or, for one that needs arguments, fills it in for you to add them),
+and ESC closes the menu.
+
+While the model works, the status line counts how long the request (or the
+tool) has run. With `<name>-metrics-url` set to the model server's own
+Prometheus metrics (vLLM or llama.cpp; a gateway such as LiteLLM has none), it
+also shows how many tokens per second the server generates, how many requests
+it is serving (`users`), any that wait in its queue, and how full its cache is.
 
 **Multi-line prompts.** End a line in a backslash and press Enter to keep the
 prompt going on the next line (as in a shell); press Enter on a line without
@@ -242,7 +251,8 @@ too: Ctrl-A and Ctrl-E go to the start and end, Ctrl-B and Ctrl-F move by a
 character, Ctrl-K deletes to the end of the line, Ctrl-U to its start, Ctrl-W
 the word before the cursor, and Ctrl-Y puts back what was deleted last. Tab
 completes a `/` command or a folder path; when it cannot complete any further,
-it lists the matches below the line.
+it lists the matches below the line. ESC clears what you have typed (or, while
+the command menu shows, closes it).
 
 **Resuming a conversation.** After every turn the conversation is saved to
 `session.json` beside the folder's local config (under `~/.tapto/projects`,
@@ -541,6 +551,7 @@ Chat config keys:
 | `<name>-provider-url` | no | claude: `https://api.anthropic.com`, openai: `https://api.openai.com`, gemini: `https://generativelanguage.googleapis.com` |
 | `<name>-model`  | no       | claude: `claude-sonnet-4-6`, openai: `gpt-4o`, gemini: `gemini-2.0-flash` |
 | `<name>-reasoning-effort` | no | unset — sent as `reasoning_effort` by the **openai** dialect only (e.g. `low`, `medium`, `high`); ignored with a warning on other dialects |
+| `<name>-metrics-url` | no | unset — the model server's Prometheus metrics (vLLM, llama.cpp), e.g. `http://gpu-box:8000/metrics`, shown on the status line while the model works. Its own URL, since `<name>-provider-url` is often a gateway (LiteLLM) without them |
 | `<name>-stream` | no | unset — this provider's own `stream`, over the unscoped one. A copy of a provider block with `<copy>-stream = true` tries the beta beside the original |
 | `<name>-context-window` | no | unset — this provider's own `context-window`, over the unscoped one |
 | `max-output-tokens` | no   | `16000` — raise it for long replies (large tables, reports) |

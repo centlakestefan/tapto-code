@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -39,7 +40,10 @@
 #include <sstream>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <vector>
+
+#include <httplib.h>
 
 #ifdef _WIN32
 #include <conio.h>
@@ -130,7 +134,8 @@ const char* kUsage =
     "  provider's refusal starts a compaction), and per provider\n"
     "  <name>-reasoning-effort (openai dialect only: low, medium, high, ...),\n"
     "  <name>-stream and <name>-context-window (the provider's own, over the\n"
-    "  ones above)\n"
+    "  ones above), and <name>-metrics-url (the model server's Prometheus\n"
+    "  /metrics, shown on the status line while it works; vLLM and llama.cpp)\n"
     "\n"
     "A provider is a named block of keys, so several backends -- including two\n"
     "local servers speaking the same API -- coexist in one config store:\n"
@@ -196,7 +201,8 @@ bool has_suffix(const std::string& key, const std::string& suffix) {
 
 // The keys a provider block owns, each written as `<name>-<key>`.
 const char* kProviderBlockKeys[] = {"provider-type", "api-key", "provider-url", "model",
-                                    "reasoning-effort", "stream", "context-window"};
+                                    "reasoning-effort", "stream", "context-window",
+                                    "metrics-url"};
 
 // A provider name has to survive a round trip through the `key = value` config
 // format, so it is limited to characters that can't be mistaken for syntax.
@@ -249,6 +255,7 @@ const char* kSupportedKeysHelp =
     "plugin.<name> (ro, rw or off), "
     "per provider <name>-provider-type, <name>-provider-url, <name>-model, "
     "<name>-api-key, <name>-reasoning-effort, <name>-stream, <name>-context-window, "
+    "<name>-metrics-url, "
     "and the keys of an installed plugin, <plugin>-... (jira-url, jira-api-token, ...); "
     "any of them for one program alone after its name: tapto-code.print-cot, "
     "tapto-word.plugin.mcp, ...";
@@ -1270,7 +1277,8 @@ size_t g_input_cols = 0;
 // moves and history recall instead of being recorded as "[A" and friends.
 // Bracketed pastes land in the line with their newlines, and Enter on a line
 // ending in a backslash starts the next row instead of sending.
-EditResult edit_line(const std::string& prompt_text, std::string& out) {
+EditResult edit_line(const std::string& prompt_text, std::string& out,
+                     const std::vector<ui::SlashCommand>* commands) {
     EditTerminal term;
     if (!term.active()) return EditResult::NoTerminal;
 
@@ -1307,6 +1315,21 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
 
     // Columns the echo can use before it has to wrap.
     const int term_cols = term.columns();
+
+    // The slash-command menu: while the line is a command's name being typed
+    // -- a '/' and no space yet -- the commands it may be, under the line. It
+    // opens on the user's own typing only, not on a paste nor on a line
+    // recalled from history (so the next Up still walks the history), and ESC
+    // closes it until the line is typed in again.
+    bool menu_open = false;
+    size_t menu_sel = 0;          // the selected entry
+    const size_t kMenuRows = 8;   // shown at once; the menu scrolls for the rest
+    auto menu_matches = [&]() -> std::vector<ui::SlashCommand> {
+        if (!menu_open || !commands || line.empty() || line[0] != '/' ||
+            line.find_first_of(" \t\n") != std::string::npos)
+            return {};
+        return ui::slash_menu_matches(*commands, line.substr(1));
+    };
 
     // Advance one UTF-8 character (bytes) from index i.
     auto next_char = [&](const std::string& s, size_t i) -> size_t {
@@ -1449,6 +1472,19 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
             buf += "\x1b[" + std::to_string(row + 1 + lines - cur_row) + "A";
             buf += "\r";
             if (cur_col) buf += "\x1b[" + std::to_string(cur_col) + "C";
+        } else if (const auto matches = menu_matches(); !matches.empty()) {
+            // The slash-command menu, under the block in the same frame. Its
+            // rows stop short of the last column, so none of them wraps and
+            // each takes exactly one row.
+            if (menu_sel >= matches.size()) menu_sel = 0;
+            const auto rows = ui::slash_menu_lines(matches, menu_sel, kMenuRows, cols);
+            for (const auto& r : rows) {
+                buf += "\r\n";
+                buf += r;
+            }
+            buf += "\x1b[" + std::to_string(row + rows.size() - cur_row) + "A";
+            buf += "\r";
+            if (cur_col) buf += "\x1b[" + std::to_string(cur_col) + "C";
         } else {
             if (row > cur_row) buf += "\x1b[" + std::to_string(row - cur_row) + "A";
             buf += "\r";
@@ -1501,6 +1537,23 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
         if (it != left_at.end()) line = it->second;
         else line = np ? recall[recall.size() - np] : std::string();
         pos = line.size();
+        menu_open = false;
+        reprint();
+    };
+
+    // The line changed by the user's own typing: the menu opens again, if the
+    // line is a command being typed, with its first entry selected.
+    auto typed = [&]() {
+        menu_open = true;
+        menu_sel = 0;
+        reprint();
+    };
+    // Fill in the command `c`, with a space after it when it takes
+    // arguments, so they are typed next (the space closes the menu).
+    auto complete = [&](const ui::SlashCommand& c) {
+        line = "/" + c.name + (c.args.empty() ? "" : " ");
+        pos = line.size();
+        menu_sel = 0;
         reprint();
     };
 
@@ -1508,10 +1561,11 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
     // caller. The cursor goes to the end of the block and on to a new line,
     // as the terminal's own echo of Enter would, so what prints next (a
     // command's output, the next prompt) starts below the whole line, not
-    // over the part after the cursor.
+    // over the part after the cursor. The menu goes first.
     auto submit = [&]() -> EditResult {
-        if (pos != line.size()) {
+        if (pos != line.size() || menu_open) {
             pos = line.size();
+            menu_open = false;
             reprint();
         }
         g_input_end_col = cursor_col;
@@ -1538,12 +1592,21 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
     // is already typed, they are shown below the line (as bash does); the
     // list disappears on the next keystroke.
     auto tab_complete = [&]() {
-        static const std::vector<std::string> kCommands = {
+        static const std::vector<std::string> kFixedCommands = {
             "/clear", "/compact", "/resume", "/cot", "/effort", "/env",
             "/list-commands", "/add-command", "/add-folder",
             "/remove-folder", "/list-folders", "/add-plugin",
             "/remove-plugin", "/list-plugins", "/help", "/exit", "/quit",
         };
+        // The menu's catalog when the chat loop gives one -- it knows the
+        // commands of the plugins loaded now -- else the fixed list.
+        std::vector<std::string> command_names;
+        if (commands) {
+            for (const auto& c : *commands) command_names.push_back("/" + c.name);
+            command_names.push_back("/quit");
+        } else {
+            command_names = kFixedCommands;
+        }
         size_t ws = pos;
         while (ws > 0 && line[ws - 1] != ' ' && line[ws - 1] != '\n') --ws;
         std::string word = line.substr(ws, pos - ws);
@@ -1556,10 +1619,10 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
         // command, so it completes as a path instead.
         bool is_command = false;
         if (word.size() > 1 && word[0] == '/')
-            for (const auto& c : kCommands)
+            for (const auto& c : command_names)
                 if (c.rfind(word, 0) == 0) { is_command = true; break; }
         if (is_command) {
-            for (const auto& c : kCommands)
+            for (const auto& c : command_names)
                 if (c.rfind(word, 0) == 0) candidates.push_back(c);
         } else {
             auto sep = word.find_last_of("/\\");
@@ -1680,6 +1743,7 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
                     pos += paste.size();
                     paste.clear();
                     in_paste = false;
+                    menu_open = false; // a paste opens no menu: only typing does
                     reprint();
                 }
                 // Any other sequence in a paste is dropped: the editor echoes
@@ -1688,10 +1752,34 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
             }
             if (seq == "\x1b[200~") { in_paste = true; continue; }
             // Editing keys. None of them may leak into the line.
-            if (seq == "\x1b[A" || seq == "\x1bOA") { // up: the older entry
+            const bool up = seq == "\x1b[A" || seq == "\x1bOA";
+            const bool down = seq == "\x1b[B" || seq == "\x1bOB";
+            if ((up || down) && !menu_matches().empty()) {
+                // With the menu showing, up and down move its selection.
+                const size_t n = menu_matches().size();
+                menu_sel = up ? (menu_sel + n - 1) % n : (menu_sel + 1) % n;
+                reprint();
+            } else if (up) { // up: the older entry
                 if (hist_pos < recall.size()) go_to(hist_pos + 1);
-            } else if (seq == "\x1b[B" || seq == "\x1bOB") { // down: the newer one (0: fresh)
+            } else if (down) { // down: the newer one (0: fresh)
                 if (hist_pos > 0) go_to(hist_pos - 1);
+            } else if (seq == "\x1b") {
+                // A bare ESC closes the menu when one shows, and otherwise
+                // clears the line, so a prompt can be started over. The line
+                // starts afresh: a recalled entry's edits stay where they were
+                // left, and Up walks the history from the newest again.
+                if (!menu_matches().empty()) {
+                    menu_open = false;
+                    reprint();
+                } else if (!line.empty()) {
+                    if (hist_pos != 0) left_at[hist_pos] = line;
+                    left_at.erase(0);
+                    hist_pos = 0;
+                    line.clear();
+                    pos = 0;
+                    menu_open = false;
+                    reprint();
+                }
             } else if (seq == "\x1b[D" || seq == "\x1b[1D" || seq == "\x1bOD") { // left
                 if (pos > 0) { pos = prev_char_start(pos); reprint(); }
             } else if (seq == "\x1b[C" || seq == "\x1b[1C" || seq == "\x1bOC") { // right
@@ -1711,11 +1799,10 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
             } else if (seq == "\x1b[3~") { // delete: the character under the cursor
                 if (pos < line.size()) {
                     line.erase(pos, next_char(line, pos) - pos);
-                    reprint();
+                    typed();
                 }
             }
-            // Anything else (a bare ESC, function keys, other arrow forms)
-            // is dropped.
+            // Anything else (function keys, other arrow forms) is dropped.
             continue;
         }
         if (in_paste) {
@@ -1741,6 +1828,20 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
                 continue;
             }
 #endif
+            // With the menu showing, Enter runs the command selected there,
+            // not the part of its name typed so far -- unless the command
+            // needs arguments: then its name is filled in for them to be
+            // typed after it, and nothing is sent yet.
+            if (const auto matches = menu_matches(); !matches.empty()) {
+                const ui::SlashCommand& c = matches[menu_sel < matches.size() ? menu_sel : 0];
+                if (!c.args.empty() && c.args[0] != '[') {
+                    complete(c);
+                    continue;
+                }
+                line = "/" + c.name;
+                pos = line.size();
+                return submit();
+            }
             // A line that ends in a backslash goes on to the next row, as in a
             // shell: the backslash becomes the line break, and the cursor
             // goes to the end of the line. An even number of them are
@@ -1774,8 +1875,15 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
             return submit();
         }
         if (b == 0x7f || b == '\b') { // backspace / delete
-            if (pos > 0) { del_char_at(pos); reprint(); }
+            if (pos > 0) { del_char_at(pos); typed(); }
             continue;
+        }
+        if (b == '\t' && !term.input_ready()) {
+            // With the menu showing, Tab completes the command selected in it.
+            if (const auto matches = menu_matches(); !matches.empty()) {
+                complete(matches[menu_sel < matches.size() ? menu_sel : 0]);
+                continue;
+            }
         }
         if (b == '\t') {
             // Tab completes the word, unless more input is queued behind it:
@@ -1797,7 +1905,7 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
             if (line.empty()) break;                // EOF at an empty line
             size_t adv = next_char(line, pos) - pos; // otherwise delete the character
             line.erase(pos, adv);
-            reprint();
+            typed();
             continue;
         }
 #ifdef _WIN32
@@ -1827,7 +1935,7 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
             line.erase(start, end - start);
             pos = start;
             last_was_kill = true;
-            reprint();
+            typed();
         };
         if (b == 11) { // Ctrl-K: kill to the end of the line
             if (pos < line.size()) kill_text(pos, line.size(), false);
@@ -1855,7 +1963,7 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
             if (!kill.empty()) {
                 line.insert(pos, kill);
                 pos += kill.size();
-                reprint();
+                typed();
             }
             continue;
         }
@@ -1877,7 +1985,7 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
         if (ch.empty()) continue;
         line.insert(pos, ch);
         pos += ch.size();
-        reprint();
+        typed();
     }
     return EditResult::Eof;
 }
@@ -1901,13 +2009,15 @@ EditResult edit_line(const std::string& prompt_text, std::string& out) {
 //
 // Returns false on EOF. `prompt` is the visible prompt text, reprinted by the
 // editor as the line changes; it must not contain escapes because its byte
-// length is used as its width.
-bool read_user_input(std::string& out, const std::string& prompt = "> ") {
+// length is used as its width. `commands` is what the menu under the prompt
+// offers while a slash command is typed; null for none.
+bool read_user_input(std::string& out, const std::string& prompt = "> ",
+                     const std::vector<ui::SlashCommand>* commands = nullptr) {
     static const std::string kPasteStart = "\x1b[200~";
     static const std::string kPasteEnd   = "\x1b[201~";
 
     g_input_end_col = std::string::npos;
-    switch (edit_line(prompt, out)) {
+    switch (edit_line(prompt, out, commands)) {
     case EditResult::Line: return true;
     case EditResult::Eof: return false;
     case EditResult::NoTerminal: break;
@@ -2008,6 +2118,113 @@ bool poll_esc() {
         if (buf[i] == 0x1B) return true;
     return false;
 #endif
+}
+
+// Keeps the status line alive while the model works, on a thread of its own
+// for the length of a turn: how long the request or tool has run, redrawn
+// each second, and -- with a <name>-metrics-url -- what the model server says
+// of its load, fetched every two seconds. The provider's URL is often a
+// gateway (LiteLLM) without such numbers, so the server's Prometheus
+// /metrics has a URL of its own. Output only: a fetch that fails shows
+// nothing, and is tried less often.
+class StatusTicker {
+public:
+    explicit StatusTicker(const std::string& metrics_url)
+        : m_url(metrics_url), m_thread([this] { run(); }) {}
+    ~StatusTicker() {
+        m_stop = true;
+        m_thread.join();
+    }
+    StatusTicker(const StatusTicker&) = delete;
+    StatusTicker& operator=(const StatusTicker&) = delete;
+
+private:
+    void run() {
+        using Clock = std::chrono::steady_clock;
+        // "http://box:8000/metrics": the client takes the scheme, host and
+        // port, the request the path. Short timeouts: the turn's end waits
+        // for a fetch under way.
+        std::unique_ptr<httplib::Client> http;
+        std::string path = "/metrics";
+        if (!m_url.empty()) {
+            const size_t scheme = m_url.find("://");
+            const size_t slash = m_url.find('/', scheme == std::string::npos ? 0 : scheme + 3);
+            const std::string base = slash == std::string::npos ? m_url : m_url.substr(0, slash);
+            if (slash != std::string::npos) path = m_url.substr(slash);
+            http = std::make_unique<httplib::Client>(base);
+            if (base.rfind("https://", 0) == 0) http->enable_server_certificate_verification(true);
+            http->set_connection_timeout(1, 0);
+            http->set_read_timeout(1, 0);
+        }
+
+        std::string details;
+        double last_generated = -1;
+        Clock::time_point last_at;
+        Clock::time_point next_fetch = Clock::now();
+        Clock::time_point next_draw = Clock::now() + std::chrono::seconds(1);
+        while (!m_stop) {
+            const auto now = Clock::now();
+            if (http && now >= next_fetch) {
+                ui::ServerMetrics m; // all unknown when the fetch fails
+                auto res = http->Get(path);
+                const bool ok = res && res->status == 200;
+                if (ok) m = ui::parse_server_metrics(res->body);
+                next_fetch = now + std::chrono::seconds(ok ? 2 : 10);
+                // The rate is the server's: every request it generates for.
+                double rate = -1;
+                if (m.generated >= 0 && last_generated >= 0 && m.generated >= last_generated) {
+                    const double dt = std::chrono::duration<double>(now - last_at).count();
+                    if (dt > 0) rate = (m.generated - last_generated) / dt;
+                }
+                last_generated = m.generated;
+                last_at = now;
+                details = ui::format_server_metrics(m, rate);
+            }
+            if (now >= next_draw) {
+                next_draw = now + std::chrono::seconds(1);
+                ui::refresh_status(details);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    }
+
+    std::string m_url;
+    std::atomic<bool> m_stop{false};
+    std::thread m_thread; // last: it starts running in the constructor
+};
+
+// What the menu under the prompt offers while a slash command is typed, and
+// what Tab completes: the commands the chat loop runs -- libtapto's shared
+// ones (run_chat_command) and this program's own -- and those of the plugins
+// loaded now. Kept in step with the loop below, and with print_help, by hand.
+std::vector<ui::SlashCommand> slash_menu_commands(const Plugins& plugins) {
+    std::vector<ui::SlashCommand> commands = {
+        {"add-command", "<name> <command...>", "allow-list a command the model may run"},
+        {"add-folder", "<path> [ro|rw]", "grant the model a folder for this session"},
+        {"add-plugin", "<name> [ro|rw]", "load a plugin's tools"},
+        {"clear", "", "clear the conversation (/resume brings it back)"},
+        {"compact", "[focus]", "summarize the conversation and go on from the summary"},
+        {"cot", "[on|off|unset]", "show or set chain-of-thought output"},
+        {"effort", "[level|unset]", "show or set the reasoning effort (openai)"},
+        {"env", "", "show the directory, model and history of this session"},
+        {"exit", "", "quit"},
+        {"help", "", "show the commands, keys and tools"},
+        {"list-commands", "", "list the allow-listed commands"},
+        {"list-folders", "", "show the working directory and the granted folders"},
+        {"list-plugins", "", "show the plugins loaded and installed"},
+        {"remove-folder", "<path|label>", "take a granted folder away"},
+        {"remove-plugin", "<name>", "take a plugin's tools away"},
+        {"resume", "", "continue the saved conversation, or undo /clear"},
+    };
+    for (const auto& c : plugins.commands()) {
+        // A plugin's usage starts with its own command ("/mcp list | login
+        // <server>"), which the menu shows apart.
+        std::string args = c.usage;
+        const std::string self = "/" + c.name;
+        if (args.compare(0, self.size(), self) == 0) args = trim(args.substr(self.size()));
+        commands.push_back({c.name, args, c.description});
+    }
+    return commands;
 }
 
 // `requested_provider` is the --provider argument, empty for the configured
@@ -2321,6 +2538,9 @@ int cmd_chat(const std::string& requested_provider, bool resume,
     CancellationToken cancel_token;
     // Headless, stdin is no keyboard (or is the prompt), so nothing polls it.
     if (!headless) cancel_token.setCheckFn(poll_esc);
+    // The model server's /metrics, for the status line while it works
+    // (StatusTicker); empty when the provider block names none.
+    const std::string metrics_url = get_effective(provider->name + "-metrics-url").value_or("");
 
     // The resolved provider is printed, so a block wired to the wrong dialect or
     // URL shows up here rather than as malformed requests.
@@ -2535,7 +2755,9 @@ int cmd_chat(const std::string& requested_provider, bool resume,
         // the color too. The cursor is made visible first: it is hidden while
         // the model works.
         ui::print_prompt(std::string("\x1b[?25h") + kPromptColor + "> ");
-        if (!read_user_input(line, "> ")) {
+        // Built for each prompt: the plugins' commands come and go with them.
+        const std::vector<ui::SlashCommand> slash_commands = slash_menu_commands(plugins);
+        if (!read_user_input(line, "> ", &slash_commands)) {
             std::cout << "\x1b[0m" << std::flush; // stop the color after the input
             ui::print_line(""); // move past the prompt on EOF (Ctrl-D / Ctrl-Z)
             break;
@@ -2543,7 +2765,12 @@ int cmd_chat(const std::string& requested_provider, bool resume,
         // Back to the default style before anything else prints: the model's
         // reply and the status line must not inherit the prompt color.
         std::cout << "\x1b[0m" << std::flush;
-        if (line == "/exit" || line == "/quit") break;
+        // "exit" and "quit" alone also end the chat: the slash is easily
+        // forgotten, and as a message to the model the word would mean nothing.
+        {
+            const std::string word = trim(line);
+            if (word == "/exit" || word == "/quit" || word == "exit" || word == "quit") break;
+        }
         if (line.empty()) continue;
         // A prompt for the model gets the time it was sent at its right (a
         // command does not), the reply the time it was done.
@@ -2892,6 +3119,8 @@ int cmd_chat(const std::string& requested_provider, bool resume,
             // can read a single ESC byte without waiting for Enter (POSIX).
             // Restored before the next prompt, which needs cooked mode.
             RawTerminal raw;
+            // The status line counts the time, and shows the server's load.
+            StatusTicker ticker(metrics_url);
             // A folder granted or withdrawn since the model was last told
             // goes with this prompt. Should the turn fail, it goes again with
             // the next: told twice is better than not at all.

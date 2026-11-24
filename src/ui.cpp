@@ -5,9 +5,12 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <ctime>
 #include <cstdint>
+#include <cstdlib>
 #include <iostream>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -914,6 +917,20 @@ std::size_t g_count_reasoning = 0;
 std::size_t g_count_text = 0;
 std::chrono::steady_clock::time_point g_count_drawn;
 
+// refresh_status: once it runs for a turn, the status line also shows how
+// long the request (or tool) has run, and what the model server says of its
+// load. The text draw_status was last given, so the line can be redrawn.
+bool        g_status_ticking = false;
+std::string g_status_details;
+std::string g_status_drawn;
+std::chrono::steady_clock::time_point g_status_since;
+
+// Taken by every function here that writes to the terminal during a turn:
+// refresh_status() runs on a thread of its own. Recursive, since some of
+// them call others.
+std::recursive_mutex g_out_mutex;
+using OutLock = std::lock_guard<std::recursive_mutex>;
+
 // --- Headless (set_headless) ------------------------------------------------
 
 bool g_headless = false;
@@ -1005,6 +1022,29 @@ void set_headless(bool on) {
 
 namespace {
 
+// What refresh_status adds after the status text, dimmed: " · 45s · 27 tok/s
+// · 1 user · cache 63%". Empty until it has run this turn.
+std::string status_suffix() {
+    if (!g_status_ticking) return "";
+    const auto secs = std::chrono::duration_cast<std::chrono::seconds>(
+                          std::chrono::steady_clock::now() - g_status_since)
+                          .count();
+    std::string s = " \xC2\xB7 "; // ·
+    s += secs < 60 ? std::to_string(secs) + "s"
+                   : std::to_string(secs / 60) + "m " + std::to_string(secs % 60) + "s";
+    if (!g_status_details.empty()) s += " \xC2\xB7 " + g_status_details;
+    return std::string(kDim) + s + kReset;
+}
+
+// Write the status line as it stands, with its suffix. The committed line
+// (commit_status) is the text alone.
+void write_status_line() {
+    constexpr size_t kMaxWidth = 78;
+    size_t visible = 0;
+    std::cout << "\r" << clip_cell(g_status_text + status_suffix(), kMaxWidth, visible) << kReset
+              << "\x1b[K" << std::flush;
+}
+
 void draw_status(const std::string& text, int iteration, int max_iterations) {
     constexpr size_t kMaxWidth = 78;
 
@@ -1013,18 +1053,31 @@ void draw_status(const std::string& text, int iteration, int max_iterations) {
     size_t visible = 0;
     g_status_text = clip_cell(iteration_prefix(iteration, max_iterations) + text,
                               kMaxWidth, visible);
+    g_status_drawn = text;
 
     note_output();
     if (!g_status_visible)
         std::cout << "\x1b[?25l"; // hide cursor while the status line is live
 
-    std::cout << "\r" << g_status_text << "\x1b[K" << std::flush;
+    write_status_line();
     g_status_visible = true;
 }
 
 } // namespace
 
+void refresh_status(const std::string& details) {
+    OutLock lock(g_out_mutex);
+    if (g_headless) return;
+    g_status_details = details;
+    g_status_ticking = true;
+    // Redrawn in place, without counting as output: a streamed reply still
+    // on the screen stays redrawable as Markdown (note_output).
+    if (g_status_visible) write_status_line();
+}
+
 void set_status(const std::string& text, int iteration, int max_iterations) {
+    OutLock lock(g_out_mutex);
+    g_status_since = std::chrono::steady_clock::now(); // the time shown is this request's
     // Each request starts with one: a new count.
     g_count_reasoning = g_count_text = 0;
     if (g_headless) {
@@ -1041,6 +1094,7 @@ void set_status(const std::string& text, int iteration, int max_iterations) {
 void count_stream(const tapto::StreamEvent& ev) {
     using Kind = tapto::StreamEvent::Kind;
     if (g_headless || ev.kind == Kind::End || ev.text.empty()) return;
+    OutLock lock(g_out_mutex);
 
     // Characters, not bytes: each starts with an ASCII or a UTF-8 lead byte.
     std::size_t chars = 0;
@@ -1060,6 +1114,7 @@ void count_stream(const tapto::StreamEvent& ev) {
 }
 
 void commit_status() {
+    OutLock lock(g_out_mutex);
     if (g_headless) {
         if (!g_status_text.empty()) headless_line(g_status_text);
         g_status_text.clear();
@@ -1073,6 +1128,11 @@ void commit_status() {
 }
 
 void end_status() {
+    OutLock lock(g_out_mutex);
+    // The turn's ticking ends with its status line; the next turn's
+    // refresh_status starts it again.
+    g_status_ticking = false;
+    g_status_details.clear();
     if (g_headless) {
         g_status_text.clear();
         return;
@@ -1089,6 +1149,7 @@ void end_status() {
 
 void emit_intermediate(const std::string& text, bool is_reasoning, bool print_cot) {
     if (text.empty() || !print_cot) return;
+    OutLock lock(g_out_mutex);
     if (g_headless) {
         headless_line(is_reasoning ? std::string(kDim) + text : text);
         return;
@@ -1172,6 +1233,7 @@ size_t last_row_width(std::string text, size_t cols) {
 
 void stamp_time_above(size_t used, size_t cols) {
     if (g_headless || cols == 0) return;
+    OutLock lock(g_out_mutex);
     // HH:MM:SS ending one column short of the edge (writing the last column
     // can wrap), and only with two blank columns between it and the text.
     constexpr size_t kWidth = 8;
@@ -1182,6 +1244,7 @@ void stamp_time_above(size_t used, size_t cols) {
 }
 
 void begin_turn_output() {
+    OutLock lock(g_out_mutex);
     g_stream_open = StreamOpen::None;
     g_stream_at_col0 = true;
     g_stream_text.clear();
@@ -1195,6 +1258,7 @@ void begin_turn_output() {
 
 void print_stream(const tapto::StreamEvent& ev) {
     using Kind = tapto::StreamEvent::Kind;
+    OutLock lock(g_out_mutex);
     if (ev.kind == Kind::End) {
         close_stream_block();
         std::cout << std::flush;
@@ -1245,6 +1309,7 @@ void print_stream(const tapto::StreamEvent& ev) {
 }
 
 void print_reply(const std::string& text) {
+    OutLock lock(g_out_mutex);
     if (g_headless) {
         std::cout << trimmed(text) << "\n" << std::flush;
         return;
@@ -1403,6 +1468,7 @@ void print_transcript(const std::vector<TranscriptEntry>& entries, const std::st
 }
 
 void print_line(const std::string& text) {
+    OutLock lock(g_out_mutex);
     if (g_headless) {
         headless_line(text);
         return;
@@ -1412,6 +1478,7 @@ void print_line(const std::string& text) {
 }
 
 void print_error(const std::string& text) {
+    OutLock lock(g_out_mutex);
     if (g_headless && !g_stderr_tty) {
         std::cerr << "error: " << strip_ansi(text) << "\n" << std::flush;
         return;
@@ -1424,6 +1491,7 @@ void print_error(const std::string& text) {
 }
 
 void print_warning(const std::string& text) {
+    OutLock lock(g_out_mutex);
     if (g_headless && !g_stderr_tty) {
         std::cerr << "warning: " << strip_ansi(text) << "\n" << std::flush;
         return;
@@ -1537,10 +1605,14 @@ void print_help(const std::vector<std::string>& tool_names) {
               << "    says where instead (/cot, /effort, /add-command, /add-plugin,\n"
               << "    /remove-plugin), and unset removes one there. Folders are never saved.\n"
               << "    /help                         show this help\n"
-              << "    /exit                         quit\n"
+              << "    /exit                         quit (exit or quit alone does too)\n"
               << "\n"
               << kBold << "  Key bindings\n" << kReset
-              << "    ESC                           interrupt the model while it is working\n"
+              << "    ESC                           interrupt the model while it is working;\n"
+              << "                                  at the prompt, clear what you typed\n"
+              << "    /                             a menu of the commands as you type one:\n"
+              << "                                  Up/Down select, Tab completes, Enter runs,\n"
+              << "                                  ESC closes it\n"
               << "\n"
               << kBold << "  Active tools\n" << kReset;
     for (const auto& t : tool_names)
@@ -1577,6 +1649,140 @@ void print_prompt(const std::string& text) {
 
 void print_prompt_accepted() {
     std::cout << "\n" << std::flush;
+}
+
+// ---------------------------------------------------------------------------
+// Slash-command menu
+// ---------------------------------------------------------------------------
+
+std::vector<SlashCommand> slash_menu_matches(const std::vector<SlashCommand>& commands,
+                                             const std::string& typed) {
+    std::vector<SlashCommand> out;
+    for (const auto& c : commands) {
+        if (c.name.size() >= typed.size() && c.name.compare(0, typed.size(), typed) == 0)
+            out.push_back(c);
+    }
+    std::stable_sort(out.begin(), out.end(),
+                     [](const SlashCommand& a, const SlashCommand& b) { return a.name < b.name; });
+    return out;
+}
+
+std::vector<std::string> slash_menu_lines(const std::vector<SlashCommand>& matches,
+                                          size_t selected, size_t max_rows, size_t cols) {
+    std::vector<std::string> lines;
+    if (matches.empty() || max_rows == 0 || cols < 8) return lines;
+    if (selected >= matches.size()) selected = matches.size() - 1;
+
+    // The window shown: from the top, scrolled just far enough that the
+    // selected entry is its last row.
+    const size_t rows = std::min(max_rows, matches.size());
+    const size_t first = selected >= rows ? selected - rows + 1 : 0;
+
+    // The usages are padded to one width, so the descriptions line up; a very
+    // long usage is not allowed to push every description off the screen.
+    std::vector<std::string> usages;
+    size_t usage_cols = 0;
+    for (size_t i = first; i < first + rows; ++i) {
+        const SlashCommand& c = matches[i];
+        usages.push_back("/" + c.name + (c.args.empty() ? "" : " " + c.args));
+        usage_cols = std::max(usage_cols, display_width(usages.back()));
+    }
+    usage_cols = std::min(usage_cols, size_t{32});
+
+    // Never into the last column: a row that fills it wraps on some
+    // terminals, and the editor counts the rows it drew to move back up.
+    const size_t limit = cols - 1;
+    auto fit = [&](const std::string& styled) {
+        if (visible_width(styled) <= limit) return styled + kReset;
+        size_t w = 0;
+        return clip_cell(styled, limit - 1, w) + kReset; // the ellipsis takes the last one
+    };
+
+    for (size_t k = 0; k < rows; ++k) {
+        const size_t i = first + k;
+        std::string usage = usages[k];
+        const size_t uw = display_width(usage);
+        if (uw < usage_cols) usage.append(usage_cols - uw, ' ');
+        const std::string& desc = matches[i].description;
+        std::string row;
+        if (i == selected) {
+            row = std::string(kBold) + kPromptColor + "\xE2\x96\xB8 " + usage; // ▸
+            if (!desc.empty()) row += "  " + desc;
+        } else {
+            row = "  " + usage;
+            if (!desc.empty()) row += std::string("  ") + kDim + desc;
+        }
+        lines.push_back(fit(row));
+    }
+    // Say so when the window hides some: the menu scrolls only as the
+    // selection moves, so they are otherwise easy to miss.
+    if (rows < matches.size()) {
+        lines.push_back(fit(std::string(kDim) + "  (" + std::to_string(selected + 1) + " of " +
+                            std::to_string(matches.size()) + ")"));
+    }
+    return lines;
+}
+
+// ---------------------------------------------------------------------------
+// Server status (the details refresh_status() shows)
+// ---------------------------------------------------------------------------
+
+ServerMetrics parse_server_metrics(const std::string& text) {
+    ServerMetrics m;
+    // Add a sample to a running total that starts unknown (negative).
+    auto add = [](double& total, double v) { total = (total < 0 ? 0 : total) + v; };
+    std::istringstream in(text);
+    std::string line;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty() || line[0] == '#') continue;
+        // name{labels} value [timestamp]; a label value may hold spaces and
+        // braces, so the labels are skipped by their quotes.
+        size_t i = 0;
+        while (i < line.size() && line[i] != '{' && line[i] != ' ') ++i;
+        const std::string name = line.substr(0, i);
+        if (i < line.size() && line[i] == '{') {
+            bool quoted = false;
+            for (++i; i < line.size(); ++i) {
+                if (line[i] == '\\' && quoted) { ++i; continue; }
+                if (line[i] == '"') quoted = !quoted;
+                else if (line[i] == '}' && !quoted) { ++i; break; }
+            }
+        }
+        while (i < line.size() && line[i] == ' ') ++i;
+        const size_t end = line.find(' ', i);
+        const std::string number = line.substr(i, end == std::string::npos ? std::string::npos : end - i);
+        char* stop = nullptr;
+        const double v = std::strtod(number.c_str(), &stop);
+        if (number.empty() || stop == number.c_str() || !std::isfinite(v)) continue;
+
+        if (name == "vllm:num_requests_running" || name == "llamacpp:requests_processing") {
+            add(m.running, v);
+        } else if (name == "vllm:num_requests_waiting" || name == "llamacpp:requests_deferred") {
+            add(m.waiting, v);
+        } else if (name == "vllm:gpu_cache_usage_perc" || name == "vllm:kv_cache_usage_perc" ||
+                   name == "llamacpp:kv_cache_usage_ratio") {
+            m.kv_usage = std::max(m.kv_usage, v); // engines' caches are separate: the fullest
+        } else if (name == "vllm:generation_tokens_total" || name == "llamacpp:tokens_predicted_total") {
+            add(m.generated, v);
+        }
+    }
+    return m;
+}
+
+std::string format_server_metrics(const ServerMetrics& m, double tokens_per_s) {
+    std::vector<std::string> parts;
+    auto count = [](double v) { return std::to_string(static_cast<long long>(std::llround(v))); };
+    if (tokens_per_s >= 0) parts.push_back(count(tokens_per_s) + " tok/s");
+    // The requests the server is generating for, each someone's: its users now.
+    if (m.running >= 0)
+        parts.push_back(count(m.running) + (std::llround(m.running) == 1 ? " user" : " users"));
+    // A queue only when there is one: nothing waiting is the usual case.
+    if (m.waiting >= 0.5) parts.push_back(count(m.waiting) + " waiting");
+    if (m.kv_usage >= 0) parts.push_back("cache " + count(m.kv_usage * 100) + "%");
+    std::string out;
+    for (const auto& p : parts) out += (out.empty() ? "" : " \xC2\xB7 ") + p; // ·
+    return out;
 }
 
 // ---------------------------------------------------------------------------

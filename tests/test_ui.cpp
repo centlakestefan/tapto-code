@@ -288,6 +288,124 @@ int main() {
         CHECK_TRUE(!contains(err.str(), "\x1b[?25")); // the cursor left alone
     }
 
+    // --- The slash-command menu ----------------------------------------------
+    // The commands a typed prefix matches, in name order, and the menu's rows:
+    // one per command shown, the selected one marked, none wider than the
+    // terminal allows (the editor counts on each taking exactly one row).
+    {
+        using tapto::ui::SlashCommand;
+        using tapto::ui::slash_menu_lines;
+        using tapto::ui::slash_menu_matches;
+        const std::vector<SlashCommand> commands = {
+            {"resume", "", "continue the saved conversation"},
+            {"add-folder", "<path> [ro|rw]", "grant the model a folder"},
+            {"clear", "", "clear the conversation"},
+            {"add-command", "<name> <command...>", "allow-list a command"},
+            {"cot", "[on|off|unset]", "show or set chain-of-thought output"},
+        };
+
+        // A prefix narrows, sorted by name; the bare '/' matches them all.
+        auto names = [](const std::vector<SlashCommand>& cs) {
+            std::string out;
+            for (const auto& c : cs) out += (out.empty() ? "" : ",") + c.name;
+            return out;
+        };
+        CHECK_EQ(names(slash_menu_matches(commands, "add")), "add-command,add-folder");
+        CHECK_EQ(names(slash_menu_matches(commands, "c")), "clear,cot");
+        CHECK_EQ(names(slash_menu_matches(commands, "")),
+                 "add-command,add-folder,clear,cot,resume");
+        CHECK_EQ(names(slash_menu_matches(commands, "clear")), "clear");
+        // Longer than every name, or matching none: nothing to show.
+        CHECK_TRUE(slash_menu_matches(commands, "clearer").empty());
+        CHECK_TRUE(slash_menu_matches(commands, "x").empty());
+
+        // All of them fit: a row each, the usage and the description in it,
+        // and the marker on the selected row alone.
+        const auto all = slash_menu_matches(commands, "");
+        auto lines = slash_menu_lines(all, 1, 8, 80);
+        CHECK_EQ_SZ(lines.size(), all.size());
+        CHECK_TRUE(contains(strip_ansi(lines[1]), "/add-folder <path> [ro|rw]"));
+        CHECK_TRUE(contains(strip_ansi(lines[1]), "grant the model a folder"));
+        const std::string marker = "\xE2\x96\xB8"; // ▸
+        CHECK_TRUE(contains(lines[1], marker));
+        for (size_t i = 0; i < lines.size(); ++i)
+            if (i != 1) CHECK_TRUE(!contains(lines[i], marker));
+        // Every row ends in a reset, so no style leaks into the next one.
+        for (const auto& l : lines)
+            CHECK_TRUE(l.size() >= 4 && l.compare(l.size() - 4, 4, "\x1b[0m") == 0);
+        // The descriptions line up: they start in the same column.
+        const size_t col0 = strip_ansi(lines[0]).find("allow-list");
+        const size_t col2 = strip_ansi(lines[2]).find("clear the");
+        CHECK_EQ_SZ(col0, col2);
+
+        // Narrow: every row is cut short of the last column, with an ellipsis.
+        lines = slash_menu_lines(all, 0, 8, 20);
+        for (const auto& l : lines) CHECK_TRUE(viswidth(strip_ansi(l)) < 20);
+        CHECK_TRUE(contains(lines[0], "\xE2\x80\xA6"));
+
+        // More than fit: the window scrolls to keep the selection in view, and
+        // a last row counts where it is.
+        lines = slash_menu_lines(all, 4, 2, 80);
+        CHECK_EQ_SZ(lines.size(), size_t{3});
+        CHECK_TRUE(contains(strip_ansi(lines[0]), "/cot"));
+        CHECK_TRUE(contains(strip_ansi(lines[1]), "/resume"));
+        CHECK_TRUE(contains(lines[1], marker));
+        CHECK_TRUE(contains(strip_ansi(lines[2]), "(5 of 5)"));
+        lines = slash_menu_lines(all, 0, 2, 80);
+        CHECK_TRUE(contains(strip_ansi(lines[0]), "/add-command"));
+        CHECK_TRUE(contains(strip_ansi(lines[2]), "(1 of 5)"));
+
+        // A selection past the end is taken as the last; no matches, no rows.
+        lines = slash_menu_lines(all, 99, 8, 80);
+        CHECK_TRUE(contains(lines.back(), marker));
+        CHECK_TRUE(slash_menu_lines({}, 0, 8, 80).empty());
+    }
+
+    // --- The model server's /metrics on the status line ---------------------
+    // vLLM's and llama.cpp's Prometheus text: the samples summed over their
+    // label sets (models, engines), the KV cache the fullest one, comments,
+    // timestamps and other metrics passed over; what is missing stays unknown.
+    {
+        using tapto::ui::format_server_metrics;
+        using tapto::ui::parse_server_metrics;
+        const std::string vllm =
+            "# HELP vllm:num_requests_running Number of requests in model execution batches.\n"
+            "# TYPE vllm:num_requests_running gauge\n"
+            "vllm:num_requests_running{engine=\"0\",model_name=\"qwen\"} 1.0\n"
+            "vllm:num_requests_running{engine=\"1\",model_name=\"qwen\"} 2.0\r\n"
+            "vllm:num_requests_waiting{engine=\"0\",model_name=\"a {b} c\"} 3.0 1731400000000\n"
+            "vllm:kv_cache_usage_perc{engine=\"0\"} 0.25\n"
+            "vllm:kv_cache_usage_perc{engine=\"1\"} 0.634\n"
+            "vllm:generation_tokens_total{engine=\"0\"} 1000.0\n"
+            "vllm:generation_tokens_total{engine=\"1\"} 234.0\n"
+            "vllm:prompt_tokens_total{engine=\"0\"} 99999.0\n"
+            "process_cpu_seconds_total 12.5\n";
+        const auto m = parse_server_metrics(vllm);
+        CHECK_EQ_SZ(static_cast<size_t>(m.running), size_t{3});
+        CHECK_EQ_SZ(static_cast<size_t>(m.waiting), size_t{3});
+        CHECK_TRUE(m.kv_usage > 0.63 && m.kv_usage < 0.64);
+        CHECK_EQ_SZ(static_cast<size_t>(m.generated), size_t{1234});
+        CHECK_EQ(format_server_metrics(m, 26.7),
+                 "27 tok/s \xC2\xB7 3 users \xC2\xB7 3 waiting \xC2\xB7 cache 63%");
+        CHECK_EQ(format_server_metrics(m, -1),
+                 "3 users \xC2\xB7 3 waiting \xC2\xB7 cache 63%"); // no rate yet
+
+        // One user, and nothing waiting: no queue shown.
+        const auto l = parse_server_metrics(
+            "llamacpp:requests_processing 1\n"
+            "llamacpp:requests_deferred 0\n"
+            "llamacpp:kv_cache_usage_ratio 0.5\n"
+            "llamacpp:tokens_predicted_total 42\n");
+        CHECK_EQ(format_server_metrics(l, 0), "0 tok/s \xC2\xB7 1 user \xC2\xB7 cache 50%");
+        CHECK_EQ_SZ(static_cast<size_t>(l.generated), size_t{42});
+
+        // A gateway's page, an error page, or nothing: all unknown, nothing shown.
+        const auto none = parse_server_metrics("litellm_requests_total 5\n<html>Not Found</html>\n");
+        CHECK_TRUE(none.running < 0 && none.waiting < 0 && none.kv_usage < 0 && none.generated < 0);
+        CHECK_EQ(format_server_metrics(none, -1), "");
+        CHECK_EQ(format_server_metrics(parse_server_metrics(""), -1), "");
+    }
+
     std::cout << (g_failures ? "FAILED " : "ok ") << (g_checks - g_failures) << "/" << g_checks
               << " checks\n";
     return g_failures ? 1 : 0;

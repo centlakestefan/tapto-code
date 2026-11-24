@@ -22,6 +22,9 @@
 //
 // Thread-safety: all functions are single-threaded; the chat loop is
 // synchronous so no locking is needed.
+// The one exception is refresh_status(), called from a thread of its own
+// while the model works: what writes to the terminal during a turn takes the
+// same lock as it does.
 // ---------------------------------------------------------------------------
 
 namespace tapto::ui {
@@ -125,6 +128,49 @@ void print_prompt_accepted();
 // the text, or headless. The chat loop stamps the prompt it sends, and
 // print_reply the reply, so the two times show how long the turn took.
 void stamp_time_above(size_t used, size_t cols);
+
+// --- Slash-command menu -----------------------------------------------------
+
+// One entry of the menu the prompt shows while a slash command is typed.
+struct SlashCommand {
+    std::string name;        // without the '/'
+    std::string args;        // usage after the name ("<path> [ro|rw]"), may be empty
+    std::string description; // one line
+};
+
+// The commands whose name starts with `typed` (the text after the '/'), in
+// name order. An empty `typed` matches every command.
+std::vector<SlashCommand> slash_menu_matches(const std::vector<SlashCommand>& commands,
+                                             const std::string& typed);
+
+// The menu's rows for `matches`, `selected` marked, at most `max_rows` of
+// them (a window that keeps `selected` in view), each clipped to fewer than
+// `cols` visible columns so that no row wraps. Pure: the caller prints them.
+std::vector<std::string> slash_menu_lines(const std::vector<SlashCommand>& matches,
+                                          size_t selected, size_t max_rows, size_t cols);
+
+// --- While the model works ---------------------------------------------------
+
+// What a model server's Prometheus /metrics says about its load (vLLM's
+// vllm:..., llama.cpp's llamacpp:...), summed over its models and engines.
+// A value it does not report is negative.
+struct ServerMetrics {
+    double running = -1;   // requests being generated now
+    double waiting = -1;   // requests queued behind them
+    double kv_usage = -1;  // KV cache in use, 0..1 (the fullest engine)
+    double generated = -1; // tokens generated since the server started
+};
+ServerMetrics parse_server_metrics(const std::string& prometheus_text);
+
+// The server's part of the status line: "27 tok/s · 3 users · 2 waiting ·
+// cache 63%", leaving out what is unknown (`tokens_per_s` < 0: no rate yet),
+// and the queue when nothing waits.
+std::string format_server_metrics(const ServerMetrics& m, double tokens_per_s);
+
+// Show on the status line, after its text, how long the request (or tool)
+// has run and `details`, and redraw it. Called each second from a thread of
+// its own while the model works; end_status() stops it until the next call.
+void refresh_status(const std::string& details);
 
 
 // --- Config / command listing ---------------------------------------------
