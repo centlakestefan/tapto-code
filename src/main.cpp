@@ -801,6 +801,8 @@ termios g_tty_saved{};
 volatile sig_atomic_t g_tty_raw = 0;
 
 void restore_tty_and_reraise(int sig) {
+    // A command runs in a process group of its own, out of the signal's reach.
+    stop_running_command();
     if (g_tty_raw) {
         tcsetattr(STDIN_FILENO, TCSANOW, &g_tty_saved);
         // The prompt color off and the cursor shown (it is hidden while the
@@ -928,6 +930,8 @@ BOOL WINAPI restore_console_on_ctrl(DWORD /*type*/) {
         DWORD written = 0;
         WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), kReset, sizeof(kReset) - 1, &written, nullptr);
     }
+    // A command runs without the console, out of Ctrl-C's reach.
+    stop_running_command();
     return FALSE; // on to the default handler, which ends the program as before
 }
 
@@ -1590,7 +1594,7 @@ EditResult edit_line(const std::string& prompt_text, std::string& out,
     auto tab_complete = [&]() {
         static const std::vector<std::string> kFixedCommands = {
             "/clear", "/compact", "/resume", "/cot", "/effort", "/env",
-            "/list-commands", "/add-command", "/add-folder",
+            "/list-commands", "/add-command", "/remove-command", "/add-folder",
             "/remove-folder", "/list-folders", "/add-plugin",
             "/remove-plugin", "/list-plugins", "/help", "/exit", "/quit",
         };
@@ -2072,11 +2076,10 @@ bool read_user_input(std::string& out, const std::string& prompt = "> ",
 // ---------------------------------------------------------------------------
 // ESC interrupt
 //
-// While the model is running the main thread is free only at checkpoints
-// (before each API call / tool execution), so the interrupt poll happens
-// there, inline — no background thread needed. poll_esc() is installed on
-// the CancellationToken via setCheckFn and called by the tool loop's check()
-// at every checkpoint.
+// While the model is running the main thread is blocked in an API call or a
+// tool most of the time, so the interrupt poll runs on a thread of its own
+// (EscWatcher below), which cancels the CancellationToken when poll_esc()
+// sees ESC. The tool loop's check() at each checkpoint reads the token.
 //
 // Windows: _kbhit() / _getch() — non-blocking in cooked mode.
 // POSIX:   select() with a zero timeout + read() — requires raw mode, which
@@ -2115,6 +2118,37 @@ bool poll_esc() {
     return false;
 #endif
 }
+
+// Watches the keyboard for ESC on a thread of its own while a turn or a
+// plugin command runs, and cancels the token from there. The turn's thread is
+// blocked in an HTTP call or a command most of the time, so a poll at its
+// checkpoints only sees ESC once the build is done; cancel() runs the abort
+// hooks at once, and run_command's stops its command. The turn's thread then
+// only reads the token's flag, so stdin has one reader. A second ESC cancels
+// again, which escalates a command that ignores being asked to stop.
+class EscWatcher {
+public:
+    explicit EscWatcher(const CancellationToken& token)
+        : m_token(token), m_thread([this] { run(); }) {}
+    ~EscWatcher() {
+        m_stop = true;
+        m_thread.join();
+    }
+    EscWatcher(const EscWatcher&) = delete;
+    EscWatcher& operator=(const EscWatcher&) = delete;
+
+private:
+    void run() {
+        while (!m_stop) {
+            if (poll_esc()) m_token.cancel();
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+    }
+
+    const CancellationToken& m_token;
+    std::atomic<bool> m_stop{false};
+    std::thread m_thread; // last: it starts running in the constructor
+};
 
 // Keeps the status line alive while the model works, on a thread of its own
 // for the length of a turn: each second, how long the request or tool has run
@@ -2168,6 +2202,7 @@ std::vector<ui::SlashCommand> slash_menu_commands(const Plugins& plugins) {
         {"env", "", "show session environment (directory, model, history)"},
         {"list-commands", "", "list allow-listed shell commands"},
         {"add-command", "<name> <cmd>", "add a new allow-listed command ([--ro], [--note \"...\"])"},
+        {"remove-command", "<name>", "remove an allow-listed command ([--global])"},
         {"add-folder", "<path> [ro|rw]", "grant the model a folder for this session: rw to edit"},
         {"remove-folder", "<path|label>", "take a granted folder away"},
         {"list-folders", "", "show the working directory and what is granted"},
@@ -2493,12 +2528,12 @@ int cmd_chat(const std::string& requested_provider, bool resume,
                "conversation; this replaces what you were told before.\n" + now;
     };
 
-    // ESC-abort cancellation token (lives for the entire chat session). The
-    // poll is installed once and runs inline in this thread at each tool-loop
-    // checkpoint (no watcher thread).
+    // ESC-abort cancellation token (lives for the entire chat session). An
+    // EscWatcher cancels it from its own thread while a turn or a plugin
+    // command runs; the tool loop's checkpoints only read it.
     CancellationToken cancel_token;
-    // Headless, stdin is no keyboard (or is the prompt), so nothing polls it.
-    if (!headless) cancel_token.setCheckFn(poll_esc);
+    // Headless, stdin is no keyboard (or is the prompt), so no EscWatcher
+    // polls it: the headless turn below runs without one.
     // The status line while the model works (StatusTicker): the seconds the
     // request has run unless status-elapsed is off, and what the plugins say,
     // told which provider the turn talks to.
@@ -3031,6 +3066,38 @@ int cmd_chat(const std::string& requested_provider, bool resume,
             continue;
         }
 
+        // The other half of /add-command, in the same scopes: the project's
+        // list, or with --global every project's. The policy's commands are
+        // the organization's and are not reachable from here.
+        if (line.rfind("/remove-command", 0) == 0) {
+            const ScopeFlags flags = parse_scope_flags(
+                line.substr(std::string("/remove-command").size()), /*leading_only=*/false);
+            if (!flags.error.empty() || flags.scope == SettingScope::Session) {
+                ui::print_line(flags.error.empty()
+                                   ? "A command is saved, in the project's list or with --global "
+                                     "in every project's; there is no command for this session "
+                                     "only."
+                                   : flags.error);
+                continue;
+            }
+            const std::string name = trim(flags.rest);
+            if (name.empty() || name.find_first_of(" \t") != std::string::npos) {
+                ui::print_line("usage: /remove-command [--global] <name>");
+                continue;
+            }
+            const Level lvl = flags.scope == SettingScope::Global ? Level::Global : Level::Local;
+            try {
+                if (remove_command(lvl, name))
+                    ui::print_command_removed(name, level_name(lvl));
+                else
+                    ui::print_line("error: command not found in " + std::string(level_name(lvl)) +
+                                   " scope: " + name);
+            } catch (const std::exception& e) {
+                ui::print_line("error: " + std::string(e.what()));
+            }
+            continue;
+        }
+
         // A plugin's own command, /<plugin> ...: after every command of the
         // core's, so it can shadow none. Its text is the user's, never the
         // model's.
@@ -3047,6 +3114,7 @@ int cmd_chat(const std::string& requested_provider, bool resume,
                     // ESC cancels a command as it does a turn (a login waits
                     // for the browser).
                     RawTerminal raw;
+                    EscWatcher esc(cancel_token);
                     text = plugins.run_command(
                         cmd, sp == std::string::npos ? std::string() : trim(line.substr(sp)), context);
                 }
@@ -3068,8 +3136,8 @@ int cmd_chat(const std::string& requested_provider, bool resume,
 
         ui::print_prompt_accepted();
 
-        // Reset the cancellation state for this turn. The ESC poll runs in
-        // this thread at each tool-loop checkpoint (see CancellationToken).
+        // Reset the cancellation state for this turn. The ESC poll runs on
+        // the EscWatcher's thread for the length of the call (see below).
         cancel_token.reset(); // reset for this turn
         context.cancel = &cancel_token;
         ui::begin_turn_output();
@@ -3083,6 +3151,7 @@ int cmd_chat(const std::string& requested_provider, bool resume,
             // can read a single ESC byte without waiting for Enter (POSIX).
             // Restored before the next prompt, which needs cooked mode.
             RawTerminal raw;
+            EscWatcher esc(cancel_token);
             // The status line counts the time, and shows what the plugins say.
             StatusTicker ticker(plugins, status_context, status_elapsed);
             // A folder granted or withdrawn since the model was last told

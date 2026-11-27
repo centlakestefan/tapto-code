@@ -224,7 +224,8 @@ took.
 
 In-session slash commands: `/clear` (reset the conversation — useful to recover
 after filling the model's context window), `/compact`, `/env`,
-`/list-commands`, `/add-command <name> <command...>`, `/resume`, and the
+`/list-commands`, `/add-command <name> <command...>`, `/remove-command
+<name>`, `/resume`, and the
 folder commands below. Typing `/` opens a menu of them under the prompt,
 narrowed as you type: Up and Down choose, Tab fills the name in, and ESC closes
 the menu. Enter fills in the chosen name too, and runs the command only once
@@ -601,6 +602,7 @@ to remove a setting there, so the next level applies again:
 /effort high              this project
 /effort unset --project   back to what your global config says
 /add-command --global build cmake --build build
+/remove-command build --global
 ```
 
 `/cot` or `/effort` alone shows the value in force and where it comes from.
