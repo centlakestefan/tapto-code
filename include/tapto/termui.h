@@ -104,8 +104,12 @@ void print_chat_header(const std::string& provider,
                        const std::vector<std::string>& tool_names);
 void print_chat_hints();
 
-// Print the /help screen: slash-command reference and active tool list.
-void print_help(const std::vector<std::string>& tool_names);
+struct SlashCommand; // below
+
+// Print the /help screen: the slash commands -- `commands`, the table the
+// prompt's menu shows too -- the keys, and the active tools.
+void print_help(const std::vector<SlashCommand>& commands,
+                const std::vector<std::string>& tool_names);
 
 
 // --- First-run / interactive prompts --------------------------------------
@@ -151,26 +155,12 @@ std::vector<std::string> slash_menu_lines(const std::vector<SlashCommand>& match
 
 // --- While the model works ---------------------------------------------------
 
-// What a model server's Prometheus /metrics says about its load (vLLM's
-// vllm:..., llama.cpp's llamacpp:...), summed over its models and engines.
-// A value it does not report is negative.
-struct ServerMetrics {
-    double running = -1;   // requests being generated now
-    double waiting = -1;   // requests queued behind them
-    double kv_usage = -1;  // KV cache in use, 0..1 (the fullest engine)
-    double generated = -1; // tokens generated since the server started
-};
-ServerMetrics parse_server_metrics(const std::string& prometheus_text);
-
-// The server's part of the status line: "27 tok/s · 3 users · 2 waiting ·
-// cache 63%", leaving out what is unknown (`tokens_per_s` < 0: no rate yet),
-// and the queue when nothing waits.
-std::string format_server_metrics(const ServerMetrics& m, double tokens_per_s);
-
 // Show on the status line, after its text, how long the request (or tool)
-// has run and `details`, and redraw it. Called each second from a thread of
-// its own while the model works; end_status() stops it until the next call.
-void refresh_status(const std::string& details);
+// has run when `elapsed` is on (status-elapsed), and `details` -- what the
+// plugins say (Plugins::status) -- and redraw it: "Thinking... (412 chars) ·
+// 45s · 27 tok/s". Called each second from a thread of its own while the
+// model works; end_status() stops it until the next call.
+void refresh_status(bool elapsed, const std::string& details);
 
 
 // --- Config / command listing ---------------------------------------------

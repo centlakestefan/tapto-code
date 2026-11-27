@@ -146,6 +146,23 @@ if(WIN32)
   include(cmake/WinDebugEngine.cmake)
   tapto_windebug_engine()
 endif()
+# metrics is tapto-code's own too: the model server's load (vLLM, llama.cpp
+# Prometheus /metrics) on the status line while the model works, fetched on a
+# thread of the plugin's with its own HTTP client (httplib and OpenSSL, the
+# pins libtapto brings; on Windows httplib reads the system's root
+# certificates through crypt32). OpenSSL and Threads are found again here:
+# libtapto's find_package makes their imported targets in its own directory
+# only, and the OpenSSL it settled on is in the cache (OPENSSL_ROOT_DIR), so
+# this finds the same one.
+find_package(OpenSSL REQUIRED)
+find_package(Threads REQUIRED)
+tapto_plugin(tapto-plugin-metrics metrics plugins/metrics/metrics.cpp)
+target_link_libraries(tapto-plugin-metrics PRIVATE
+  httplib::httplib OpenSSL::SSL OpenSSL::Crypto nlohmann_json::nlohmann_json Threads::Threads)
+target_compile_definitions(tapto-plugin-metrics PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)
+if(WIN32)
+  target_link_libraries(tapto-plugin-metrics PRIVATE crypt32 ws2_32)
+endif()
 get_property(_tapto_plugins GLOBAL PROPERTY TAPTO_PLUGINS)
 if(_tapto_plugins)
   add_dependencies(tapto-code ${_tapto_plugins})
@@ -273,3 +290,10 @@ if(WIN32)
   tapto_code_warnings(test-windebug)
   add_test(NAME windebug COMMAND test-windebug $<TARGET_FILE:tapto-plugin-windebug>)
 endif()
+
+# The metrics plugin's reading of a server's Prometheus text, and the words it
+# makes of it: vLLM's and llama.cpp's, a gateway's page, nothing.
+add_executable(test-metrics tests/test_metrics.cpp)
+target_include_directories(test-metrics PRIVATE plugins/metrics)
+tapto_code_warnings(test-metrics)
+add_test(NAME metrics COMMAND test-metrics)

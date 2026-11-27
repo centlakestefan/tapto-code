@@ -226,15 +226,16 @@ In-session slash commands: `/clear` (reset the conversation — useful to recove
 after filling the model's context window), `/compact`, `/env`,
 `/list-commands`, `/add-command <name> <command...>`, `/resume`, and the
 folder commands below. Typing `/` opens a menu of them under the prompt,
-narrowed as you type: Up and Down choose, Tab fills the name in, Enter runs the
-command (or, for one that needs arguments, fills it in for you to add them),
-and ESC closes the menu.
+narrowed as you type: Up and Down choose, Tab fills the name in, and ESC closes
+the menu. Enter fills in the chosen name too, and runs the command only once
+its whole name is there, so a partly typed `/c` never runs `/clear`; a command
+that needs arguments is filled in for you to add them. `/help` lists the same
+commands, the loaded plugins' included.
 
 While the model works, the status line counts how long the request (or the
-tool) has run. With `<name>-metrics-url` set to the model server's own
-Prometheus metrics (vLLM or llama.cpp; a gateway such as LiteLLM has none), it
-also shows how many tokens per second the server generates, how many requests
-it is serving (`users`), any that wait in its queue, and how full its cache is.
+tool) has run, beside what it shows already: `Thinking... (412 chars) · 45s`.
+`status-elapsed = false` turns the count off. The `metrics` plugin (below) adds
+the model server's load to the same line.
 
 **Multi-line prompts.** End a line in a backslash and press Enter to keep the
 prompt going on the next line (as in a shell); press Enter on a line without
@@ -531,6 +532,23 @@ folder can, through `windebug-path`. Symbols come from `windebug-symbol-path`, e
 dump's modules to that server, as any debugger does. The engine's extension
 gallery, which would download extensions, is turned off.
 
+**The model server's load.** With `/add-plugin metrics` (or `plugin.metrics =
+ro`) the status line shows, while the model works, what the model server says
+of its load: the tokens per second it generates, how many requests it is
+serving (`users`), any that wait in its queue, and how full its cache is:
+`Thinking... · 45s · 27 tok/s · 1 user · cache 63%`. It reads the server's own
+Prometheus metrics, vLLM's or llama.cpp's, at the URL `metrics-url` names:
+
+```
+tapto-code --global config set metrics-url http://gpu-box:8000/metrics
+```
+
+That is the server's own address, not the provider URL: a gateway in front of
+it (LiteLLM) has no such numbers. The numbers are the whole server's, other
+users' requests included. They are fetched every two seconds while the model
+works, and not at all between turns; a server that does not answer leaves the
+line as it was.
+
 **First run:** if no provider/api-key is configured, tapto-code prompts for them
 interactively and saves them to the global (`~/.tapto`) config, then starts
 the chat. You can also set them manually instead:
@@ -551,11 +569,11 @@ Chat config keys:
 | `<name>-provider-url` | no | claude: `https://api.anthropic.com`, openai: `https://api.openai.com`, gemini: `https://generativelanguage.googleapis.com` |
 | `<name>-model`  | no       | claude: `claude-sonnet-4-6`, openai: `gpt-4o`, gemini: `gemini-2.0-flash` |
 | `<name>-reasoning-effort` | no | unset — sent as `reasoning_effort` by the **openai** dialect only (e.g. `low`, `medium`, `high`); ignored with a warning on other dialects |
-| `<name>-metrics-url` | no | unset — the model server's Prometheus metrics (vLLM, llama.cpp), e.g. `http://gpu-box:8000/metrics`, shown on the status line while the model works. Its own URL, since `<name>-provider-url` is often a gateway (LiteLLM) without them |
 | `<name>-stream` | no | unset — this provider's own `stream`, over the unscoped one. A copy of a provider block with `<copy>-stream = true` tries the beta beside the original |
 | `<name>-context-window` | no | unset — this provider's own `context-window`, over the unscoped one |
 | `max-output-tokens` | no   | `16000` — raise it for long replies (large tables, reports) |
 | `max-tool-iterations` | no | `200` — max tool-call rounds per reply before the agent stops |
+| `status-elapsed` | no      | `true` — while the model works, the status line counts the seconds the request has run; `false` leaves the count out |
 | `connection-timeout` | no  | `30` — seconds to wait for the provider to accept the connection |
 | `read-timeout`  | no       | `300` — seconds to wait while the server sends nothing. A streamed reply (`stream`) arrives in pieces, so this is in practice the wait for the first one; unstreamed, it is the whole answer, so raise it for a slow local model (a timeout shorter than the generation retries the same request until the retry budget is spent) |
 | `stream`        | no       | `false` — **beta**: `true` shows the reply as it arrives, the chain of thought dimmed and the answer redrawn as Markdown when it is complete, and ESC stops it partway through. With `print-cot` off the reply is not shown until it is complete, and the status line counts the characters received instead: `Thinking... (412 chars)`, then `Writing... (37 chars)`; `false` waits for the whole reply |

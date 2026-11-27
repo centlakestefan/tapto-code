@@ -5,10 +5,8 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cmath>
 #include <ctime>
 #include <cstdint>
-#include <cstdlib>
 #include <iostream>
 #include <mutex>
 #include <sstream>
@@ -918,9 +916,10 @@ std::size_t g_count_text = 0;
 std::chrono::steady_clock::time_point g_count_drawn;
 
 // refresh_status: once it runs for a turn, the status line also shows how
-// long the request (or tool) has run, and what the model server says of its
-// load. The text draw_status was last given, so the line can be redrawn.
+// long the request (or tool) has run (when g_status_elapsed), and what the
+// plugins say. The text draw_status was last given, so the line can be redrawn.
 bool        g_status_ticking = false;
+bool        g_status_elapsed = true;
 std::string g_status_details;
 std::string g_status_drawn;
 std::chrono::steady_clock::time_point g_status_since;
@@ -1023,17 +1022,21 @@ void set_headless(bool on) {
 namespace {
 
 // What refresh_status adds after the status text, dimmed: " · 45s · 27 tok/s
-// · 1 user · cache 63%". Empty until it has run this turn.
+// · 1 user · cache 63%". Empty until it has run this turn, and when there is
+// neither a time to show nor details.
 std::string status_suffix() {
     if (!g_status_ticking) return "";
-    const auto secs = std::chrono::duration_cast<std::chrono::seconds>(
-                          std::chrono::steady_clock::now() - g_status_since)
-                          .count();
-    std::string s = " \xC2\xB7 "; // ·
-    s += secs < 60 ? std::to_string(secs) + "s"
-                   : std::to_string(secs / 60) + "m " + std::to_string(secs % 60) + "s";
+    std::string s;
+    if (g_status_elapsed) {
+        const auto secs = std::chrono::duration_cast<std::chrono::seconds>(
+                              std::chrono::steady_clock::now() - g_status_since)
+                              .count();
+        s += " \xC2\xB7 "; // ·
+        s += secs < 60 ? std::to_string(secs) + "s"
+                       : std::to_string(secs / 60) + "m " + std::to_string(secs % 60) + "s";
+    }
     if (!g_status_details.empty()) s += " \xC2\xB7 " + g_status_details;
-    return std::string(kDim) + s + kReset;
+    return s.empty() ? s : std::string(kDim) + s + kReset;
 }
 
 // Write the status line as it stands, with its suffix. The committed line
@@ -1065,9 +1068,10 @@ void draw_status(const std::string& text, int iteration, int max_iterations) {
 
 } // namespace
 
-void refresh_status(const std::string& details) {
+void refresh_status(bool elapsed, const std::string& details) {
     OutLock lock(g_out_mutex);
     if (g_headless) return;
+    g_status_elapsed = elapsed;
     g_status_details = details;
     g_status_ticking = true;
     // Redrawn in place, without counting as output: a streamed reply still
@@ -1583,36 +1587,28 @@ void print_chat_hints() {
                  "/add-command <name> <command...>, /exit\n";
 }
 
-void print_help(const std::vector<std::string>& tool_names) {
+void print_help(const std::vector<SlashCommand>& commands,
+                const std::vector<std::string>& tool_names) {
+    // The commands from the table the prompt's menu shows too, so the two
+    // cannot drift apart: the usage padded to a column, then what it does.
+    std::cout << "\n" << kBold << "  Slash commands\n" << kReset;
+    for (const auto& c : commands) {
+        std::string usage = "/" + c.name + (c.args.empty() ? "" : " " + c.args);
+        const size_t w = display_width(usage);
+        usage += w < 30 ? std::string(30 - w, ' ') : std::string(" ");
+        std::cout << "    " << usage << c.description << "\n";
+    }
     std::cout << "\n"
-              << kBold << "  Slash commands\n" << kReset
-              << "    /clear                        clear conversation history\n"
-              << "    /compact [focus]              summarize and restart from the summary\n"
-              << "    /resume                       continue the saved conversation, or undo /clear\n"
-              << "    /cot [on|off|unset]           show / set chain-of-thought output (saved globally)\n"
-              << "    /effort [value|unset]         show / set OpenAI reasoning-effort (saved for the project)\n"
-              << "    /env                          show session environment (directory, model, history)\n"
-              << "    /list-commands                list allow-listed shell commands\n"
-              << "    /add-command <name> <cmd>     add a new allow-listed command ([--ro], [--note \"...\"])\n"
-              << "    /add-folder <path> [ro|rw]    grant the model a folder for this session: rw to edit\n"
-              << "    /remove-folder <path|label>   revoke it\n"
-              << "    /list-folders                 show the working directory and what is granted\n"
-              << "    /add-plugin <name> [ro|rw]    load a plugin's tools: read tools, or rw for all\n"
-              << "    /remove-plugin <name>         take its tools away\n"
-              << "    /list-plugins                 show the plugins loaded and installed\n"
-              << "\n"
               << "    A setting goes to its default place; --session, --project or --global\n"
               << "    says where instead (/cot, /effort, /add-command, /add-plugin,\n"
               << "    /remove-plugin), and unset removes one there. Folders are never saved.\n"
-              << "    /help                         show this help\n"
-              << "    /exit                         quit (exit or quit alone does too)\n"
               << "\n"
               << kBold << "  Key bindings\n" << kReset
               << "    ESC                           interrupt the model while it is working;\n"
               << "                                  at the prompt, clear what you typed\n"
               << "    /                             a menu of the commands as you type one:\n"
-              << "                                  Up/Down select, Tab completes, Enter runs,\n"
-              << "                                  ESC closes it\n"
+              << "                                  Up/Down select, Tab or Enter fills the name\n"
+              << "                                  in, Enter on a whole name runs it, ESC closes it\n"
               << "\n"
               << kBold << "  Active tools\n" << kReset;
     for (const auto& t : tool_names)
@@ -1721,68 +1717,6 @@ std::vector<std::string> slash_menu_lines(const std::vector<SlashCommand>& match
                             std::to_string(matches.size()) + ")"));
     }
     return lines;
-}
-
-// ---------------------------------------------------------------------------
-// Server status (the details refresh_status() shows)
-// ---------------------------------------------------------------------------
-
-ServerMetrics parse_server_metrics(const std::string& text) {
-    ServerMetrics m;
-    // Add a sample to a running total that starts unknown (negative).
-    auto add = [](double& total, double v) { total = (total < 0 ? 0 : total) + v; };
-    std::istringstream in(text);
-    std::string line;
-    while (std::getline(in, line)) {
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        if (line.empty() || line[0] == '#') continue;
-        // name{labels} value [timestamp]; a label value may hold spaces and
-        // braces, so the labels are skipped by their quotes.
-        size_t i = 0;
-        while (i < line.size() && line[i] != '{' && line[i] != ' ') ++i;
-        const std::string name = line.substr(0, i);
-        if (i < line.size() && line[i] == '{') {
-            bool quoted = false;
-            for (++i; i < line.size(); ++i) {
-                if (line[i] == '\\' && quoted) { ++i; continue; }
-                if (line[i] == '"') quoted = !quoted;
-                else if (line[i] == '}' && !quoted) { ++i; break; }
-            }
-        }
-        while (i < line.size() && line[i] == ' ') ++i;
-        const size_t end = line.find(' ', i);
-        const std::string number = line.substr(i, end == std::string::npos ? std::string::npos : end - i);
-        char* stop = nullptr;
-        const double v = std::strtod(number.c_str(), &stop);
-        if (number.empty() || stop == number.c_str() || !std::isfinite(v)) continue;
-
-        if (name == "vllm:num_requests_running" || name == "llamacpp:requests_processing") {
-            add(m.running, v);
-        } else if (name == "vllm:num_requests_waiting" || name == "llamacpp:requests_deferred") {
-            add(m.waiting, v);
-        } else if (name == "vllm:gpu_cache_usage_perc" || name == "vllm:kv_cache_usage_perc" ||
-                   name == "llamacpp:kv_cache_usage_ratio") {
-            m.kv_usage = std::max(m.kv_usage, v); // engines' caches are separate: the fullest
-        } else if (name == "vllm:generation_tokens_total" || name == "llamacpp:tokens_predicted_total") {
-            add(m.generated, v);
-        }
-    }
-    return m;
-}
-
-std::string format_server_metrics(const ServerMetrics& m, double tokens_per_s) {
-    std::vector<std::string> parts;
-    auto count = [](double v) { return std::to_string(static_cast<long long>(std::llround(v))); };
-    if (tokens_per_s >= 0) parts.push_back(count(tokens_per_s) + " tok/s");
-    // The requests the server is generating for, each someone's: its users now.
-    if (m.running >= 0)
-        parts.push_back(count(m.running) + (std::llround(m.running) == 1 ? " user" : " users"));
-    // A queue only when there is one: nothing waiting is the usual case.
-    if (m.waiting >= 0.5) parts.push_back(count(m.waiting) + " waiting");
-    if (m.kv_usage >= 0) parts.push_back("cache " + count(m.kv_usage * 100) + "%");
-    std::string out;
-    for (const auto& p : parts) out += (out.empty() ? "" : " \xC2\xB7 ") + p; // ·
-    return out;
 }
 
 // ---------------------------------------------------------------------------

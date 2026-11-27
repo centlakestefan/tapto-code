@@ -158,15 +158,18 @@ newer build never looks older than the one it replaces.
   Ctrl-Left and Ctrl-Right move by the word instead of by the character. A
   long line wraps at a word boundary rather than in the middle of a word.
 - Typing `/` at the prompt opens a menu of the commands under it, narrowed
-  as you type, with what each one does. Up and Down choose one, Tab fills it
-  in, Enter runs it, and ESC closes the menu.
+  as you type, with what each one does. Up and Down choose one, Tab or Enter
+  fills its name in, Enter on a whole name runs it, and ESC closes the menu.
+  `/help` lists the same commands, the plugins' included.
 - ESC at the prompt clears what you have typed, so you can start over.
 - `exit` or `quit` on its own ends the chat, as `/exit` does, for when the
   slash is forgotten.
 - While the model works, the status line counts the seconds the request has
-  run. With `<name>-metrics-url` pointing at your model server's metrics (vLLM
-  or llama.cpp), it also shows the tokens per second the server generates, how
-  many it is serving, any queue, and how full its cache is.
+  run; `status-elapsed = false` turns the count off.
+- `/add-plugin metrics` shows your model server's load on the status line
+  while the model works: the tokens per second it generates, how many requests
+  it is serving, any queue, and how full its cache is. Point `metrics-url` at
+  the server's own metrics (vLLM or llama.cpp).
 
 ### Changed
 

@@ -43,8 +43,6 @@
 #include <thread>
 #include <vector>
 
-#include <httplib.h>
-
 #ifdef _WIN32
 #include <conio.h>
 #include <shellapi.h> // CommandLineToArgvW
@@ -131,11 +129,11 @@ const char* kUsage =
     "  true shows the reply as it arrives), auto-compact (default true: a\n"
     "  conversation that outgrows the context window is summarized and the turn\n"
     "  goes on), context-window (the model's window in tokens; unset, only the\n"
-    "  provider's refusal starts a compaction), and per provider\n"
+    "  provider's refusal starts a compaction), status-elapsed (default true: the\n"
+    "  status line counts the seconds the request has run), and per provider\n"
     "  <name>-reasoning-effort (openai dialect only: low, medium, high, ...),\n"
     "  <name>-stream and <name>-context-window (the provider's own, over the\n"
-    "  ones above), and <name>-metrics-url (the model server's Prometheus\n"
-    "  /metrics, shown on the status line while it works; vLLM and llama.cpp)\n"
+    "  ones above)\n"
     "\n"
     "A provider is a named block of keys, so several backends -- including two\n"
     "local servers speaking the same API -- coexist in one config store:\n"
@@ -201,8 +199,7 @@ bool has_suffix(const std::string& key, const std::string& suffix) {
 
 // The keys a provider block owns, each written as `<name>-<key>`.
 const char* kProviderBlockKeys[] = {"provider-type", "api-key", "provider-url", "model",
-                                    "reasoning-effort", "stream", "context-window",
-                                    "metrics-url"};
+                                    "reasoning-effort", "stream", "context-window"};
 
 // A provider name has to survive a round trip through the `key = value` config
 // format, so it is limited to characters that can't be mistaken for syntax.
@@ -231,7 +228,7 @@ bool is_supported_config_key(const std::string& key) {
         "max-output-tokens", "max-tool-iterations", "system-prompt", "system-prompt-file",
         "system-prompt-append", "system-prompt-append-file", "trace-file", "print-cot",
         "connection-timeout", "read-timeout", "stream",
-        "reasoning-effort", "auto-compact", "context-window",
+        "reasoning-effort", "auto-compact", "context-window", "status-elapsed",
     };
     for (const char* k : kKeys) {
         if (key == k) return true;
@@ -251,11 +248,10 @@ const char* kSupportedKeysHelp =
     "provider, provider-url, model, api-key, "
     "max-output-tokens, max-tool-iterations, system-prompt, system-prompt-file, "
     "system-prompt-append, system-prompt-append-file, trace-file, print-cot, "
-    "connection-timeout, read-timeout, stream, auto-compact, context-window, "
+    "connection-timeout, read-timeout, stream, auto-compact, context-window, status-elapsed, "
     "plugin.<name> (ro, rw or off), "
     "per provider <name>-provider-type, <name>-provider-url, <name>-model, "
     "<name>-api-key, <name>-reasoning-effort, <name>-stream, <name>-context-window, "
-    "<name>-metrics-url, "
     "and the keys of an installed plugin, <plugin>-... (jira-url, jira-api-token, ...); "
     "any of them for one program alone after its name: tapto-code.print-cot, "
     "tapto-word.plugin.mcp, ...";
@@ -1828,18 +1824,18 @@ EditResult edit_line(const std::string& prompt_text, std::string& out,
                 continue;
             }
 #endif
-            // With the menu showing, Enter runs the command selected there,
-            // not the part of its name typed so far -- unless the command
-            // needs arguments: then its name is filled in for them to be
-            // typed after it, and nothing is sent yet.
+            // With the menu showing, Enter runs a command only when its whole
+            // name is typed and it is the one selected; a part of a name
+            // ("/c") is filled in with the selected command's instead, so
+            // nothing runs that was not seen whole. A command that needs
+            // arguments is filled in too, a space after it for them.
             if (const auto matches = menu_matches(); !matches.empty()) {
                 const ui::SlashCommand& c = matches[menu_sel < matches.size() ? menu_sel : 0];
-                if (!c.args.empty() && c.args[0] != '[') {
+                const bool needs_args = !c.args.empty() && c.args[0] != '[';
+                if (line != "/" + c.name || needs_args) {
                     complete(c);
                     continue;
                 }
-                line = "/" + c.name;
-                pos = line.size();
                 return submit();
             }
             // A line that ends in a backslash goes on to the next row, as in a
@@ -2121,16 +2117,15 @@ bool poll_esc() {
 }
 
 // Keeps the status line alive while the model works, on a thread of its own
-// for the length of a turn: how long the request or tool has run, redrawn
-// each second, and -- with a <name>-metrics-url -- what the model server says
-// of its load, fetched every two seconds. The provider's URL is often a
-// gateway (LiteLLM) without such numbers, so the server's Prometheus
-// /metrics has a URL of its own. Output only: a fetch that fails shows
-// nothing, and is tried less often.
+// for the length of a turn: each second, how long the request or tool has run
+// (status-elapsed) and what the plugins say (Plugins::status, ITaptoPluginStatus:
+// the metrics plugin's server load). A plugin answers at once from what it
+// last fetched, so the turn's end never waits on a server.
 class StatusTicker {
 public:
-    explicit StatusTicker(const std::string& metrics_url)
-        : m_url(metrics_url), m_thread([this] { run(); }) {}
+    StatusTicker(const Plugins& plugins, std::string json_context, bool elapsed)
+        : m_plugins(plugins), m_context(std::move(json_context)), m_elapsed(elapsed),
+          m_thread([this] { run(); }) {}
     ~StatusTicker() {
         m_stop = true;
         m_thread.join();
@@ -2141,80 +2136,46 @@ public:
 private:
     void run() {
         using Clock = std::chrono::steady_clock;
-        // "http://box:8000/metrics": the client takes the scheme, host and
-        // port, the request the path. Short timeouts: the turn's end waits
-        // for a fetch under way.
-        std::unique_ptr<httplib::Client> http;
-        std::string path = "/metrics";
-        if (!m_url.empty()) {
-            const size_t scheme = m_url.find("://");
-            const size_t slash = m_url.find('/', scheme == std::string::npos ? 0 : scheme + 3);
-            const std::string base = slash == std::string::npos ? m_url : m_url.substr(0, slash);
-            if (slash != std::string::npos) path = m_url.substr(slash);
-            http = std::make_unique<httplib::Client>(base);
-            if (base.rfind("https://", 0) == 0) http->enable_server_certificate_verification(true);
-            http->set_connection_timeout(1, 0);
-            http->set_read_timeout(1, 0);
-        }
-
-        std::string details;
-        double last_generated = -1;
-        Clock::time_point last_at;
-        Clock::time_point next_fetch = Clock::now();
         Clock::time_point next_draw = Clock::now() + std::chrono::seconds(1);
         while (!m_stop) {
-            const auto now = Clock::now();
-            if (http && now >= next_fetch) {
-                ui::ServerMetrics m; // all unknown when the fetch fails
-                auto res = http->Get(path);
-                const bool ok = res && res->status == 200;
-                if (ok) m = ui::parse_server_metrics(res->body);
-                next_fetch = now + std::chrono::seconds(ok ? 2 : 10);
-                // The rate is the server's: every request it generates for.
-                double rate = -1;
-                if (m.generated >= 0 && last_generated >= 0 && m.generated >= last_generated) {
-                    const double dt = std::chrono::duration<double>(now - last_at).count();
-                    if (dt > 0) rate = (m.generated - last_generated) / dt;
-                }
-                last_generated = m.generated;
-                last_at = now;
-                details = ui::format_server_metrics(m, rate);
-            }
-            if (now >= next_draw) {
-                next_draw = now + std::chrono::seconds(1);
-                ui::refresh_status(details);
+            if (Clock::now() >= next_draw) {
+                next_draw = Clock::now() + std::chrono::seconds(1);
+                ui::refresh_status(m_elapsed, m_plugins.status(m_context));
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
     }
 
-    std::string m_url;
+    const Plugins& m_plugins;
+    const std::string m_context;
+    const bool m_elapsed;
     std::atomic<bool> m_stop{false};
     std::thread m_thread; // last: it starts running in the constructor
 };
 
-// What the menu under the prompt offers while a slash command is typed, and
-// what Tab completes: the commands the chat loop runs -- libtapto's shared
-// ones (run_chat_command) and this program's own -- and those of the plugins
-// loaded now. Kept in step with the loop below, and with print_help, by hand.
+// The one table of slash commands: what the menu under the prompt offers
+// while one is typed, what Tab completes, and what /help lists -- the
+// commands the chat loop runs (libtapto's shared ones, run_chat_command, and
+// this program's own) and those of the plugins loaded now. In /help's order;
+// the menu sorts them by name.
 std::vector<ui::SlashCommand> slash_menu_commands(const Plugins& plugins) {
     std::vector<ui::SlashCommand> commands = {
-        {"add-command", "<name> <command...>", "allow-list a command the model may run"},
-        {"add-folder", "<path> [ro|rw]", "grant the model a folder for this session"},
-        {"add-plugin", "<name> [ro|rw]", "load a plugin's tools"},
         {"clear", "", "clear the conversation (/resume brings it back)"},
         {"compact", "[focus]", "summarize the conversation and go on from the summary"},
-        {"cot", "[on|off|unset]", "show or set chain-of-thought output"},
-        {"effort", "[level|unset]", "show or set the reasoning effort (openai)"},
-        {"env", "", "show the directory, model and history of this session"},
-        {"exit", "", "quit"},
-        {"help", "", "show the commands, keys and tools"},
-        {"list-commands", "", "list the allow-listed commands"},
-        {"list-folders", "", "show the working directory and the granted folders"},
-        {"list-plugins", "", "show the plugins loaded and installed"},
-        {"remove-folder", "<path|label>", "take a granted folder away"},
-        {"remove-plugin", "<name>", "take a plugin's tools away"},
         {"resume", "", "continue the saved conversation, or undo /clear"},
+        {"cot", "[on|off|unset]", "show / set chain-of-thought output (saved globally)"},
+        {"effort", "[value|unset]", "show / set OpenAI reasoning-effort (saved for the project)"},
+        {"env", "", "show session environment (directory, model, history)"},
+        {"list-commands", "", "list allow-listed shell commands"},
+        {"add-command", "<name> <cmd>", "add a new allow-listed command ([--ro], [--note \"...\"])"},
+        {"add-folder", "<path> [ro|rw]", "grant the model a folder for this session: rw to edit"},
+        {"remove-folder", "<path|label>", "take a granted folder away"},
+        {"list-folders", "", "show the working directory and what is granted"},
+        {"add-plugin", "<name> [ro|rw]", "load a plugin's tools: read tools, or rw for all"},
+        {"remove-plugin", "<name>", "take a plugin's tools away"},
+        {"list-plugins", "", "show the plugins loaded and installed"},
+        {"help", "", "show this help"},
+        {"exit", "", "quit (exit or quit alone does too)"},
     };
     for (const auto& c : plugins.commands()) {
         // A plugin's usage starts with its own command ("/mcp list | login
@@ -2538,9 +2499,18 @@ int cmd_chat(const std::string& requested_provider, bool resume,
     CancellationToken cancel_token;
     // Headless, stdin is no keyboard (or is the prompt), so nothing polls it.
     if (!headless) cancel_token.setCheckFn(poll_esc);
-    // The model server's /metrics, for the status line while it works
-    // (StatusTicker); empty when the provider block names none.
-    const std::string metrics_url = get_effective(provider->name + "-metrics-url").value_or("");
+    // The status line while the model works (StatusTicker): the seconds the
+    // request has run unless status-elapsed is off, and what the plugins say,
+    // told which provider the turn talks to.
+    bool status_elapsed = true;
+    if (auto v = get_effective("status-elapsed")) {
+        std::string s = *v;
+        std::transform(s.begin(), s.end(), s.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        status_elapsed = !(s == "false" || s == "0" || s == "off" || s == "no");
+    }
+    const std::string status_context =
+        nlohmann::json{{"provider", provider->name}, {"provider_url", url}, {"model", model}}.dump();
 
     // The resolved provider is printed, so a block wired to the wrong dialect or
     // URL shows up here rather than as malformed requests.
@@ -2812,14 +2782,8 @@ int cmd_chat(const std::string& requested_provider, bool resume,
         if (line == "/help") {
             std::vector<std::string> tool_names;
             for (const auto& t : context.tools) tool_names.push_back(t.name);
-            ui::print_help(tool_names);
-            const auto commands = plugins.commands();
-            if (!commands.empty()) {
-                std::string text = "  Plugin commands:\n";
-                for (const auto& c : commands)
-                    text += "    " + c.usage + (c.description.empty() ? "" : "\n      " + c.description) + "\n";
-                ui::print_line(text);
-            }
+            // The menu's table, the plugins' commands in it.
+            ui::print_help(slash_menu_commands(plugins), tool_names);
             continue;
         }
 
@@ -3119,8 +3083,8 @@ int cmd_chat(const std::string& requested_provider, bool resume,
             // can read a single ESC byte without waiting for Enter (POSIX).
             // Restored before the next prompt, which needs cooked mode.
             RawTerminal raw;
-            // The status line counts the time, and shows the server's load.
-            StatusTicker ticker(metrics_url);
+            // The status line counts the time, and shows what the plugins say.
+            StatusTicker ticker(plugins, status_context, status_elapsed);
             // A folder granted or withdrawn since the model was last told
             // goes with this prompt. Should the turn fail, it goes again with
             // the next: told twice is better than not at all.
