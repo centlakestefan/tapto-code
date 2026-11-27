@@ -170,6 +170,8 @@ newer build never looks older than the one it replaces.
   while the model works: the tokens per second it generates, how many requests
   it is serving, any queue, and how full its cache is. Point `metrics-url` at
   the server's own metrics (vLLM or llama.cpp).
+- `/remove-command <name>` takes away a command added with `/add-command`,
+  from the project's list or, with `--global`, from every project's.
 
 ### Changed
 
@@ -191,6 +193,9 @@ newer build never looks older than the one it replaces.
   them are saved in `@tmp`, and a note at each cut tells the model which
   lines of that file hold the rest. A matching line longer than 300 bytes is
   shortened, with its length, and a result too long to show goes to `@tmp`.
+- ESC stops a command the model is running, such as a build or a test run,
+  at once and with everything it started, where it used to wait for the
+  command to end. Ctrl-C, which ends tapto-code, stops the command too.
 
 ### Fixed
 
